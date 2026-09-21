@@ -33,9 +33,9 @@ enum class SourceMode { None, Oboe, UsbIso };
  *
  *   AAudio exclusive MMAP callback (producer, realtime)
  *        -> RingBuffer (lock-free hand-off)
- *        -> encoder thread (consumer, THREAD_PRIORITY_URGENT_AUDIO on the Kotlin side owns
- *           the *service* thread priority; this native thread inherits pthread defaults and
- *           is deliberately NOT realtime since file I/O/encoding must be free to block)
+ *        -> encoder thread (consumer; inherits pthread defaults and is deliberately NOT
+ *           realtime since file I/O/encoding must be free to block). The libusb event thread
+ *           that feeds the USB-iso path raises its own priority in UsbIsoAudioSource.
  *        -> AudioWriter (WAV/FLAC)
  *
  * Exactly one recording session is supported at a time, matching the app's single-mixer,
@@ -77,6 +77,9 @@ public:
     int64_t getElapsedMillis() const;
     int32_t getXRunCount() const;
     void getUsbIsoTransferStats(uint64_t outStats[7]) const;
+    /** True once per pending request: the USB-iso source wants every configurable MIX pair
+     *  re-routed via the Kotlin-side vendor control path (never from the libusb event thread). */
+    bool takeRouteFallbackRequest();
     std::string getDiagnosticSummary();
 
     /** Copies the RGB waveform snapshot into @p outBins (kBinCount * 4 + 2 floats: bins, cursor, bin duration ms).
@@ -121,7 +124,7 @@ private:
     std::atomic<bool> mPaused{false};
     std::atomic<bool> mStopRequested{false};
     std::atomic<bool> mWaveformEnabled{true};
-    std::atomic<float> mRecordingGainLinear{3.9810717f};
+    std::atomic<float> mRecordingGainLinear{1.0f};
     std::atomic<bool> mLivePcmActive{false};
     std::atomic<uint64_t> mLiveDroppedFrames{0};
     std::atomic<uint64_t> mLivePcmFramesRead{0};

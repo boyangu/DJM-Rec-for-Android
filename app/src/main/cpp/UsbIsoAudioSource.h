@@ -37,7 +37,10 @@ namespace djmrec {
  * Threading: start()/stop() are expected to be called from a single control thread (the
  * caller is responsible for not calling them concurrently). Internally, a dedicated thread
  * pumps libusb_handle_events_timeout_completed(); the FrameCallback supplied to start() is
- * invoked synchronously from that thread and must not block or perform blocking I/O.
+ * invoked synchronously from that thread and must not block or perform blocking I/O. No
+ * synchronous libusb control transfer may ever be issued from that thread (libusb's sync API
+ * re-enters the event loop); vendor route changes needed mid-stream are surfaced through
+ * takeRouteFallbackRequest() for the Kotlin side to perform on its own connection.
  *
  * Lifetime contract: the Kotlin-side UsbDeviceConnection that produced Config::fd MUST remain
  * open (not .close()'d) for the entire time this object is running -- closing it invalidates
@@ -63,6 +66,16 @@ public:
         int feedbackMaxPacketSize = 0;
         int vendorId = -1;
         int productId = -1;
+        // Route REC OUT *with* the mic bus (kernel source 0x0a) rather than "without mic" (0x0e)
+        // on models that offer both. Ignored where only one variant exists.
+        bool includeMicInMix = true;
+        // Field overrides (Recording setup > Mixer profile > Advanced). -1 = follow the profile,
+        // 0 = force off, 1 = force on.
+        int playbackOverride = -1;       // silent OUT keepalive traffic
+        int endpointRateOverride = -1;   // UAC1 SET_CUR sampling frequency on the capture endpoint
+        // True when the wire format was entered manually: a mismatch with the native profile
+        // table is then logged instead of rejecting the session.
+        bool allowFormatMismatch = false;
         std::vector<uint8_t> rawDescriptors;
     };
 
@@ -93,6 +106,9 @@ public:
     void stop();
 
     bool isRunning() const { return mRunning.load(std::memory_order_acquire); }
+    /** True once the transport itself failed (device gone, repeated transfer errors, resubmit
+     *  failure) -- distinct from an orderly stop(). */
+    bool hasTransportFault() const { return mTransportFault.load(std::memory_order_acquire); }
     int openedSampleRate() const { return mOpenedSampleRate.load(std::memory_order_acquire); }
 
     /**
@@ -106,6 +122,14 @@ public:
     /** Release-safe, read-only snapshot used by exported support reports. */
     std::string diagnosticSummary() const;
 
+    /**
+     * Returns true exactly once per request raised by the capture thread when a full silent
+     * window followed the initial MIX route (fallback stage 1 -> 2). The caller should then
+     * route every configurable output to MIX over its own control path (Kotlin
+     * `UsbDeviceConnection.controlTransfer`) -- never from this object's event thread.
+     */
+    bool takeRouteFallbackRequest() { return mRouteFallbackRequested.exchange(false, std::memory_order_acq_rel); }
+
 private:
     void eventThreadLoop();
     void handleCompletedTransfer(libusb_transfer* transfer);
@@ -116,15 +140,22 @@ private:
     bool submitPlaybackTransfer(libusb_transfer* transfer);
     bool startPioneerPlaybackSilence(int sampleRate);
     void configurePioneerRecordingRoute();
-    void routeAllPioneerOutputsToMix();
     void routePioneerOutputToMix(int output);
     void restorePioneerRecordingRoute();
+    void failTransport(const char* reason);
 
     static void onTransferComplete(libusb_transfer* transfer);
     static void onPlaybackTransferComplete(libusb_transfer* transfer);
 
+    const char* profileName() const { return mMixerProfile ? mMixerProfile->name : "manual"; }
+
     static constexpr int kNumTransfers = 8;
     static constexpr int kPacketsPerTransfer = 16;
+    // Whole-URB error statuses tolerated before the transport is declared dead.
+    static constexpr int kMaxConsecutiveTransferErrors = 8;
+    // Per-channel activity decode runs on every Nth packet only; pair peaks still accumulate
+    // over each one-second window, which is all the auto-pick and diagnostics need.
+    static constexpr int kActivityDecimation = 4;
 
     Config mConfig{};
     FrameCallback mCallback;
@@ -143,14 +174,29 @@ private:
     int mPlaybackPacketsPerSecond = 0;
     int mPlaybackFrameBytes = 0;
     int mPlaybackMaxPacketSize = 0;
+    // Effective (profile + override) duplex/rate decisions, resolved once in start().
+    bool mPlaybackEnabled = false;
+    int mPlaybackInterface = -1;
+    int mPlaybackAlternateSetting = -1;
+    int mPlaybackOutChannels = 0;
+    int mPlaybackOutSubframeBytes = 0;
+    bool mUseEndpointSampleRate = false;
+    // Guards mPlaybackFrameRemainder: the initial submit loop on the control thread can overlap
+    // with the first completions arriving on the event thread.
+    std::mutex mPlaybackMutex;
     uint64_t mPlaybackFrameRemainder = 0;
     std::atomic<int> mPioneerFallbackStage{0};
+    std::atomic<bool> mRouteFallbackRequested{false};
     // -999 means no request was sent; libusb errors use -1 through -99.
     std::atomic<int> mEndpointRateSetResult{-999};
-    std::atomic<int> mDjm450RouteSetResult{-999};
-    std::atomic<int> mDjm450RouteValue{-1};
+    // Write-only MIX route applied after SET_INTERFACE for models without a route GET
+    // (DJM-450, DJM-V10, DJM-S11): the wValue sent and the libusb result.
+    std::atomic<int> mSetupRouteSetResult{-999};
+    std::atomic<int> mSetupRouteValue{-1};
 
     std::atomic<bool> mRunning{false};
+    std::atomic<bool> mTransportFault{false};
+    int mConsecutiveTransferErrors = 0;
     std::atomic<int> mOutstandingTransfers{0};
     std::atomic<uint64_t> mPacketsCompleted{0};
     std::atomic<uint64_t> mPacketsMissed{0};
@@ -166,6 +212,7 @@ private:
     std::vector<int32_t> mScratch;   // reusable decode buffer, grown as needed
     std::vector<uint32_t> mPairPeaks;
     ChannelActivity mChannelActivity;
+    int mActivityPacketCounter = 0;
     std::atomic<int> mResolvedChannelOffset{-1};
     size_t mFramesSincePeakLog = 0;
     bool mLoggedPayloadWindow = false;

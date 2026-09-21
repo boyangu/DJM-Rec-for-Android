@@ -41,6 +41,11 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
     if (mStreamOpen.load()) {
         LOGW("open() called while a stream is already open; closing the previous one first");
     }
+    if (mStream) {
+        mStream->requestStop();
+        mStream->close();
+        mStream.reset();
+    }
     if (mUsbIsoSource) {
         mUsbIsoSource->stop();
         mUsbIsoSource.reset();
@@ -452,7 +457,20 @@ int32_t UsbAudioEngine::getRecordingErrorCode() const {
 }
 
 bool UsbAudioEngine::isStreamOpen() const {
-    return mStreamOpen.load(std::memory_order_acquire);
+    if (!mStreamOpen.load(std::memory_order_acquire)) return false;
+    // The USB-iso source stops itself on unplug / repeated transfer errors; surface that as a
+    // closed stream so the Kotlin health check reacts within one tick instead of waiting for
+    // several "no packets" windows.
+    std::lock_guard<std::mutex> lock(mControlMutex);
+    if (mSourceMode == SourceMode::UsbIso && mUsbIsoSource && !mUsbIsoSource->isRunning()) {
+        return false;
+    }
+    return true;
+}
+
+bool UsbAudioEngine::takeRouteFallbackRequest() {
+    std::lock_guard<std::mutex> lock(mControlMutex);
+    return mUsbIsoSource && mUsbIsoSource->takeRouteFallbackRequest();
 }
 
 void UsbAudioEngine::writeLiveFrames(
@@ -498,6 +516,9 @@ void UsbAudioEngine::stopLivePcm() {
 }
 
 size_t UsbAudioEngine::readLivePcm16(uint8_t* output, size_t maxBytes) {
+    // mLiveRingBuffer is reset by openUsbIso()/closeEngine() under mControlMutex; hold it here
+    // too so the streaming reader can never race a teardown (previously a use-after-free window).
+    std::lock_guard<std::mutex> lock(mControlMutex);
     if (!mLivePcmActive.load(std::memory_order_acquire) || !mLiveRingBuffer || !output) return 0;
     const size_t maxFrames = maxBytes / (2 * sizeof(int16_t));
     const size_t availableFrames = mLiveRingBuffer->availableToRead() / (2 * sizeof(int32_t));
@@ -575,6 +596,7 @@ void UsbAudioEngine::closeEngine() {
         mUsbIsoSource.reset();
     }
     mRingBuffer.reset();
+    mLiveRingBuffer.reset();
     mSourceMode = SourceMode::None;
     mStreamOpen.store(false, std::memory_order_release);
 }
@@ -643,6 +665,7 @@ int32_t UsbAudioEngine::getXRunCount() const {
 
 void UsbAudioEngine::getUsbIsoTransferStats(uint64_t outStats[7]) const {
     std::fill(outStats, outStats + 7, 0);
+    std::lock_guard<std::mutex> lock(mControlMutex);
     if (!mUsbIsoSource) {
         return;
     }

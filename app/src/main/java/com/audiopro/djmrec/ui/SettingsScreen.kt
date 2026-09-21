@@ -134,7 +134,21 @@ fun SettingsScreen(viewModel: MainViewModel) {
         PreferenceSwitch("Smooth waveform", "Scroll at the display frame rate. Turn off to reduce graphics work.", smooth, viewModel::setSmoothWaveform)
         PreferenceSwitch("Keep recorder screen awake", "Applies while monitoring or recording. Capture also works with screen locked.", keepScreen, viewModel::setKeepScreenOn)
         Text("Background recording", style = MaterialTheme.typography.titleLarge)
-        Text("Keep the persistent notification enabled. Allow background battery use in Android settings for long sets. Force-stop, reboot or disconnecting USB still ends capture.", color = TextSecondary)
+        val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        var batteryExempt by remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName)) }
+        val batteryExemptionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { batteryExempt = powerManager.isIgnoringBatteryOptimizations(context.packageName) }
+        Text("Keep the persistent notification enabled. Android's battery optimization is the most common reason a long set stops in the background; exempt DJM REC once so a 2-hour recording survives with the screen off. Force-stop, reboot or disconnecting USB still ends capture.", color = TextSecondary)
+        if (batteryExempt) {
+            Text("Battery optimization: unrestricted (recommended)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+        } else {
+            Button(onClick = {
+                batteryExemptionLauncher.launch(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
+                )
+            }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Allow unrestricted battery use") }
+        }
         OutlinedButton(onClick = {
             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Android app settings") }

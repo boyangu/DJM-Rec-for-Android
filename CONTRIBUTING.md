@@ -61,12 +61,18 @@ Recorded audio and raw audio packet dumps remain excluded; the existing Settings
 For new profiles, collect the connection ID, descriptor chunks, selected format/rate/pair,
 channel peaks and failure events. Test stereo separation and saved timing on physical hardware.
 
-Standalone channel-measurement regression:
+Native unit tests (header-only helpers: PCM decode, rate resolution, Pioneer route tables,
+channel activity, waveform/gain math) build with any host C++17 compiler and run in CI:
 
 ```sh
-c++ -std=c++17 -Iapp/src/main/cpp app/src/test/cpp/ChannelActivityTest.cpp -o channel-test
-./channel-test
+cmake -S app/src/test/cpp -B build/native-tests
+cmake --build build/native-tests
+ctest --test-dir build/native-tests --output-on-failure
 ```
+
+When touching a mixer profile, cross-check the wire format and route option codes against the
+Linux kernel's `sound/usb/quirks-table.h` and `sound/usb/mixer_quirks.c` (snd_djm_* tables) and
+cite the entry in the profile comment.
 
 Production builds require an untracked `app/google-services.json`. For GitHub releases, store its
 base64-encoded contents in the `GOOGLE_SERVICES_JSON_BASE64` repository secret. The release workflow

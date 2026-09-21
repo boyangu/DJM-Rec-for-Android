@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.43.0 (2026-09-21)
+
+- Route the *selected* USB pair to MIX/REC OUT on models without a readable route register
+  (DJM-V10, DJM-S11, DJM-450 unchanged): picking USB 5/6 on a V10 now records MIX on USB 5/6.
+- Correct Pioneer route source tables against the Linux `snd-usb-audio` DJM quirks: 0x0a is
+  REC OUT (with mic), 0x0e REC OUT without mic, 0x09 mic-only (never a MIX route). DJM-750MK2 no
+  longer writes 0x0f ("None") and defaults to its factory REC OUT pair USB 9/10.
+- Add **Include microphone** (A9, V5), **Mixer USB recording level** (A9, V10; vendor register
+  0x8003, +15 dB … 0 dB) and a **Sample rate** picker to Recording setup. Software gain now
+  defaults to 0 dB instead of +12 dB.
+- Generic AlphaTheta fallback: an unknown or vendor-class-only mixer (e.g. a DJM-V5 with a
+  different product ID) is captured with the shared 12-ch/24-bit template and clearly marked
+  unverified instead of being refused. Any AlphaTheta device now launches the app on attach.
+- Add **Diagnostics > Copy USB descriptors** for finishing mixer profiles from real hardware.
+- Add a per-mixer **Mixer profile** override in Recording setup: force any built-in profile
+  (e.g. treat an unrecognised mixer as a DJM-V5 or DJM-A9), choose "class-compliant only" to
+  send no vendor commands, or hand-enter the USB wire format (channel count, sample container,
+  capture endpoint) and toggle the silent playback keepalive and endpoint sample-rate command.
+  Stored per mixer, applied by re-reading the device, no rebuild needed.
+- DJM-V5: product IDs 0x0058-0x005B, the REC OUT with/without mic options and the six-step USB
+  recording level are now confirmed against AlphaTheta's DJM-V5 Setting Utility 1.0.0; the
+  mixer USB level control is offered for the V5 as well.
+- Native capture: never issue vendor control transfers from the libusb event thread (the
+  "route all pairs" fallback is handed to the app's USB connection); inspect transfer status so an
+  unplugged mixer or a dead endpoint ends the session within one health tick; raise the capture
+  thread to audio priority; decimate per-channel activity decoding; fix a data race in the
+  playback keepalive pacing and a use-after-free window when stats/live PCM were read during
+  close; claim a shared capture/playback interface once.
+- Service: health, meter and notification polling survive transient states; the wake lock's
+  timeout is renewed every tick; a refused foreground promotion after the encoder started no
+  longer leaves an orphaned MediaStore row; dropped start Intents release their USB connection;
+  free-space failures are treated as unknown rather than unlimited.
+- Add a one-tap battery-optimization exemption in Settings (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`).
+- Remove the dead "Android audio stack" and "DJM-REC port" experiments (the MULTI I/O port is a
+  USB host port for iPhone/iPad and cannot work with Android).
+- Build: pin libusb to v1.0.29, replace deprecated `FetchContent_Populate`, and build/run the
+  native unit tests in CI via CMake/ctest.
+
 ## v0.42.3 (2026-09-16)
 
 - Correct DJM-450 MIX/REC OUT routing to honor the selected USB pair after interface and

@@ -34,11 +34,24 @@ class UsbAudioManager(private val context: Context) {
         private const val TAG = "UsbAudioManager"
         const val ACTION_USB_PERMISSION = "com.audiopro.djmrec.USB_PERMISSION"
 
-        /** Pioneer Corporation (legacy) and AlphaTheta/Pioneer DJ (current) USB vendor IDs. */
-        val PIONEER_VENDOR_IDS = setOf(0x08E4, 0x2B73)
+        /**
+         * AlphaTheta / Pioneer DJ USB vendor ID. Every DJM/XDJ this app knows enumerates under
+         * it; the legacy Pioneer Corporation ID (0x08E4, DJM-750/850) has no profile here.
+         */
+        val PIONEER_VENDOR_IDS = setOf(PioneerMixerProfile.ALPHATHETA_VENDOR_ID)
 
         const val AUTO_CHANNEL_OFFSET = -1
         private fun isPioneerDevice(device: UsbDevice) = device.vendorId in PIONEER_VENDOR_IDS
+
+        /**
+         * Wire format assumed for an AlphaTheta device that exposes neither standard UAC
+         * AudioStreaming descriptors nor a verified per-model vendor override: the template every
+         * multichannel DJM in the Linux quirks table shares (12 ch, S24_3LE, 44.1/48/96 kHz).
+         */
+        private const val GENERIC_ALPHATHETA_CHANNELS = 12
+        private const val GENERIC_ALPHATHETA_SUBFRAME = 3
+        private const val GENERIC_ALPHATHETA_BITS = 24
+        private val GENERIC_ALPHATHETA_RATES = listOf(44_100, 48_000, 96_000)
     }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -200,8 +213,11 @@ class UsbAudioManager(private val context: Context) {
             AllInOneProfile.find(device.vendorId, device.productId) != null ||
             (0 until device.interfaceCount).any { i ->
                 val intf = device.getInterface(i)
-                intf.interfaceClass == UsbConstants.USB_CLASS_AUDIO &&
-                    intf.interfaceSubclass == 2 &&
+                // Standard UAC streaming interface, or -- for any AlphaTheta device, known PID or
+                // not -- an isochronous IN endpoint on a vendor-specific interface (DJM-900NXS2,
+                // DJM-V10 and friends never declare class 1 for their audio).
+                (intf.interfaceClass == UsbConstants.USB_CLASS_AUDIO && intf.interfaceSubclass == 2 ||
+                    isPioneerDevice(device)) &&
                     (0 until intf.endpointCount).any { endpointIndex ->
                         val endpoint = intf.getEndpoint(endpointIndex)
                         endpoint.direction == UsbConstants.USB_DIR_IN &&
@@ -292,13 +308,19 @@ class UsbAudioManager(private val context: Context) {
         val topology: UacTopology
         var clockSampleRates = emptyList<Int>()
         var mixerProfile: PioneerMixerProfile? = null
+        var formatGuessed = false
+        // Runtime overrides (Recording setup > Mixer profile) let an unknown or mis-detected
+        // mixer be driven without a rebuild: forced profile, "class-compliant only", manual wire
+        // format / endpoint, duplex and rate-command switches.
+        val override = CaptureOverrideStore.load(context, device.vendorId, device.productId)
+        if (override.isActive) Log.i(TAG, "${device.deviceName}: capture override active: $override")
         val bestInterface = try {
             rawDescriptors = connection.rawDescriptors ?: ByteArray(0)
             com.audiopro.djmrec.diagnostics.RemoteDiagnostics.descriptors(device.vendorId, device.productId, rawDescriptors, device.deviceName)
             Log.i(TAG, "${device.deviceName}: read ${rawDescriptors.size} bytes of raw descriptors")
             streamingInterfaces = UsbAudioDescriptorParser.findAudioStreamingInterfaces(rawDescriptors)
             topology = UsbAudioDescriptorParser.parseTopology(rawDescriptors)
-            mixerProfile = PioneerMixerProfile.find(device.vendorId, device.productId)
+            mixerProfile = override.resolveProfile(device.vendorId, device.productId)
             clockSampleRates = if (mixerProfile != null) {
                 Log.i(TAG, "${device.deviceName}: using ${mixerProfile.displayName} endpoint/vendor clock profile")
                 emptyList()
@@ -334,7 +356,7 @@ class UsbAudioManager(private val context: Context) {
                         it.subframeSize == mixerProfile.vendorCaptureSubframeSize &&
                         it.bitResolution == mixerProfile.vendorCaptureBitResolution))
             })
-            standardBest ?: mixerProfile?.takeIf { it.hasVendorCaptureOverride }?.let { profile ->
+            val vendorOverride = standardBest ?: mixerProfile?.takeIf { it.hasVendorCaptureOverride }?.let { profile ->
                 // Never replace an explicit, conflicting PCM descriptor with guessed bytes.
                 if (streamingInterfaces.any { it.interfaceNumber == profile.vendorCaptureInterface &&
                         it.alternateSetting == profile.vendorCaptureAlternateSetting }) return@let null
@@ -368,6 +390,52 @@ class UsbAudioManager(private val context: Context) {
                     }
                 }
             }
+            // Last resort for AlphaTheta hardware only: a DJM-V5 with a different product ID, or
+            // any future model, that hides its audio behind a vendor-class interface used to be
+            // refused outright ("exposes no supported PCM capture format"). Instead, take the
+            // largest isochronous IN endpoint on a non-zero alt setting, assume the shared DJM
+            // template and say so loudly in the UI -- the pair picker, cadence-based rate
+            // detection and the descriptor export make this diagnosable rather than a dead end.
+            val genericFallback = vendorOverride ?: run {
+                if (device.vendorId != PioneerMixerProfile.ALPHATHETA_VENDOR_ID || streamingInterfaces.isNotEmpty()) return@run null
+                val candidate = UsbAudioDescriptorParser.findAnyIsoInEndpoints(rawDescriptors)
+                    .filter { it.alternateSetting > 0 && (it.isochronousInMaxPacketSize ?: 0) > 0 }
+                    .maxByOrNull { it.isochronousInMaxPacketSize ?: 0 }
+                    ?: return@run null
+                formatGuessed = true
+                Log.w(
+                    TAG,
+                    "${device.deviceName}: no UAC or profile format; assuming generic AlphaTheta " +
+                        "${GENERIC_ALPHATHETA_CHANNELS}ch/${GENERIC_ALPHATHETA_BITS}bit on " +
+                        "if${candidate.interfaceNumber}/alt${candidate.alternateSetting} " +
+                        "(class ${candidate.interfaceClass}, ep 0x${candidate.isochronousInEndpointAddress?.toString(16)})"
+                )
+                trace(device, "inspectAndPublish", "generic AlphaTheta fallback if${candidate.interfaceNumber}/alt${candidate.alternateSetting}")
+                candidate.copy(
+                    channelCount = GENERIC_ALPHATHETA_CHANNELS,
+                    bitResolution = GENERIC_ALPHATHETA_BITS,
+                    subframeSize = GENERIC_ALPHATHETA_SUBFRAME
+                )
+            }
+            // Manual endpoint / wire format always has the last word.
+            if (override.hasFormat || override.hasEndpoint) {
+                val manual = override.applyTo(
+                    genericFallback, UsbAudioDescriptorParser.findAnyIsoInEndpoints(rawDescriptors))
+                if (manual == null) {
+                    Log.w(TAG, "${device.deviceName}: manual override names no usable endpoint; using detection result")
+                } else {
+                    formatGuessed = false
+                    Log.i(
+                        TAG,
+                        "${device.deviceName}: manual USB format if${manual.interfaceNumber}/alt${manual.alternateSetting} " +
+                            "ep=0x${manual.isochronousInEndpointAddress?.toString(16)} ${manual.channelCount}ch/" +
+                            "${manual.bitResolution}bit/subframe${manual.subframeSize}"
+                    )
+                }
+                manual ?: genericFallback
+            } else {
+                genericFallback
+            }
         } finally {
             // We only needed the descriptors; AAudio/AudioFlinger owns the real data connection.
             connection.close()
@@ -378,7 +446,7 @@ class UsbAudioManager(private val context: Context) {
             Log.w(TAG, "${device.deviceName} exposes no usable isochronous IN audio streaming interface")
             _deviceState.value = null
             _connectionNotice.value = AllInOneProfile.find(device.vendorId, device.productId)?.takeIf { it == AllInOneProfile.XDJ_RX3 }?.setupHint
-                ?: "${device.productName ?: "This device"} exposes no supported PCM capture format. Try its PC/Mac audio mode. A vendor-specific format needs a verified driver profile."
+                ?: "${device.productName ?: "This device"} exposes no supported PCM capture format. Try its PC/Mac audio mode, or set a manual USB format under Recording setup > Mixer profile."
             return
         }
         Log.i(
@@ -406,16 +474,36 @@ class UsbAudioManager(private val context: Context) {
             subframeSize = bestInterface.subframeSize,
             supportedSampleRates = mixerProfile?.vendorCaptureSampleRates?.takeIf { it.isNotEmpty() }
                 ?: bestInterface.sampleRates.takeIf { it.isNotEmpty() }
+                ?: GENERIC_ALPHATHETA_RATES.takeIf { formatGuessed || override.hasFormat || override.hasEndpoint }
                 ?: (clockSampleRates +
                     (routedDeviceId?.second ?: emptyList())).distinct(),
             audioManagerDeviceId = routedDeviceId?.first ?: -1,
             hasPermission = true,
             isPioneer = isPioneerDevice(device),
             rawDescriptors = rawDescriptors,
-            topology = topology
+            topology = topology,
+            formatGuessed = formatGuessed,
+            captureOverride = override
         )
         _connectionNotice.value = null
         refreshInputs()
+    }
+
+    /**
+     * Re-reads descriptors and republishes the current device, e.g. after the user changed a
+     * [CaptureOverride]. Callers must have stopped any running capture first (the fresh snapshot
+     * may select a different endpoint or format). Returns false when no device is published,
+     * it vanished, or permission is missing.
+     */
+    fun reinspectCurrentDevice(): Boolean {
+        val info = _deviceState.value ?: return false
+        val device = usbManager.deviceList.values.firstOrNull {
+            it.deviceName == info.deviceName && it.vendorId == info.vendorId && it.productId == info.productId
+        } ?: return false
+        if (!usbManager.hasPermission(device)) return false
+        Log.i(TAG, "${device.deviceName}: re-inspecting after capture override change")
+        inspectAndPublish(device)
+        return true
     }
 
     private fun queryClockSampleRates(
@@ -546,38 +634,105 @@ class UsbAudioManager(private val context: Context) {
      * chasing a signal that was never going to move. The official driver doesn't verify either;
      * it just sends the SET and trusts it. This does the same.
      */
-    private fun establishPioneerRoute(connection: UsbDeviceConnection, profile: PioneerMixerProfile) {
+    private fun establishPioneerRoute(
+        connection: UsbDeviceConnection,
+        profile: PioneerMixerProfile,
+        selectedChannelOffset: Int,
+        includeMic: Boolean
+    ) {
         // DJM-450 is configured after native SET_INTERFACE/SET_CUR, with the actual selected
         // pair. A pre-claim write to the default pair cannot initialize an explicit USB5/6 route.
         if (profile == PioneerMixerProfile.DJM_450) return
         val defaultOutput = profile.defaultCaptureChannelOffset / 2
-        val outputs = (listOf(defaultOutput) + profile.additionalMixOutputs)
+        val selectedOutput = selectedChannelOffset.takeIf { it >= 0 }?.div(2)
+        val outputs = (listOfNotNull(selectedOutput, defaultOutput) + profile.additionalMixOutputs)
             .distinct()
             .filter { it in 0 until profile.outputCount }
         for (output in outputs) {
-            val mixSource = profile.mixWithoutMicSources.getOrNull(output) ?: continue
-            if (mixSource < 0) continue
-            val setValue = ((output + 1) shl 8) or mixSource
-            val setResult = connection.controlTransfer(
-                UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_VENDOR,
-                PioneerMixerProfile.ROUTE_SET_REQUEST,
-                setValue,
-                PioneerMixerProfile.ROUTE_INDEX,
-                null,
-                0,
-                1000
-            )
-            if (setResult < 0) {
-                Log.w(TAG, "${profile.displayName}: route SET output ${output + 1} value 0x${setValue.toString(16)} failed (result=$setResult)")
-            } else {
-                Log.i(TAG, "${profile.displayName}: sent MIX/REC OUT route SET for output ${output + 1} (source=0x${mixSource.toString(16)}) -- not verified by readback, see function doc")
-            }
+            writeMixRoute(connection, profile, output, includeMic)
         }
     }
 
-    fun openIsoCaptureHandle(): UsbIsoCaptureHandle? {
+    /** One vendor route SET; returns true when the control transfer was accepted. */
+    private fun writeMixRoute(
+        connection: UsbDeviceConnection,
+        profile: PioneerMixerProfile,
+        output: Int,
+        includeMic: Boolean
+    ): Boolean {
+        val setValue = profile.mixRouteValue(output, includeMic)
+        if (setValue < 0) return false
+        val setResult = connection.controlTransfer(
+            UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_VENDOR,
+            PioneerMixerProfile.ROUTE_SET_REQUEST,
+            setValue,
+            PioneerMixerProfile.ROUTE_INDEX,
+            null,
+            0,
+            1000
+        )
+        if (setResult < 0) {
+            Log.w(TAG, "${profile.displayName}: route SET output ${output + 1} value 0x${setValue.toString(16)} failed (result=$setResult)")
+        } else {
+            Log.i(TAG, "${profile.displayName}: sent MIX/REC OUT route SET for output ${output + 1} (value=0x${setValue.toString(16)}, mic=$includeMic) -- not verified by readback, see function doc")
+        }
+        return setResult >= 0
+    }
+
+    /**
+     * Requested by the native capture thread (via `AudioEngine.takeRouteFallbackRequest`) after a
+     * fully silent first window: route every configurable output to MIX using this connection.
+     * Runs on the service's monitor thread -- never on the libusb event thread.
+     */
+    fun applyRouteFallback(includeMic: Boolean) {
+        val connection = activeIsoConnection ?: return
+        val profile = _deviceState.value?.pioneerMixerProfile ?: return
+        if (profile.routeReadMode == PioneerMixerProfile.RouteReadMode.NONE) return
+        Log.i(TAG, "${profile.displayName}: fallback -- routing MIX to all ${profile.outputCount} configurable pairs")
+        for (output in 0 until profile.outputCount) writeMixRoute(connection, profile, output, includeMic)
+    }
+
+    /**
+     * Writes the mixer's USB capture-level register (A9/V10 six-step scale, see
+     * [PioneerMixerProfile.CAPTURE_LEVEL_STEPS_DB]). [stepIndex] < 0 leaves the mixer setting alone.
+     */
+    private fun applyCaptureLevel(connection: UsbDeviceConnection, profile: PioneerMixerProfile, stepIndex: Int) {
+        if (stepIndex < 0 || !profile.supportsCaptureLevel) return
+        val value = PioneerMixerProfile.captureLevelValue(stepIndex)
+        val result = connection.controlTransfer(
+            UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_VENDOR,
+            PioneerMixerProfile.ROUTE_SET_REQUEST,
+            value,
+            PioneerMixerProfile.CAPTURE_LEVEL_INDEX,
+            null,
+            0,
+            1000
+        )
+        val db = PioneerMixerProfile.CAPTURE_LEVEL_STEPS_DB.getOrNull(stepIndex)
+        if (result < 0) Log.w(TAG, "${profile.displayName}: capture level +$db dB (0x${value.toString(16)}) failed (result=$result)")
+        else Log.i(TAG, "${profile.displayName}: capture level set to +$db dB (0x${value.toString(16)})")
+    }
+
+    /**
+     * @param selectedChannelOffset the user's USB pair (0-based first channel) or
+     *   [AUTO_CHANNEL_OFFSET]; the matching MIX output is routed up front so a manual pick on a
+     *   write-only model (DJM-V10) records MIX, not whatever the pair carried before.
+     * @param includeMic route REC OUT with the mic bus where the model offers a choice.
+     * @param captureLevelStep index into [PioneerMixerProfile.CAPTURE_LEVEL_STEPS_DB] or -1.
+     */
+    fun openIsoCaptureHandle(
+        selectedChannelOffset: Int = AUTO_CHANNEL_OFFSET,
+        includeMic: Boolean = true,
+        captureLevelStep: Int = -1
+    ): UsbIsoCaptureHandle? {
         val info = _deviceState.value ?: run {
             Log.w(TAG, "openIsoCaptureHandle: no device currently published")
+            return null
+        }
+        if (activeIsoConnection != null && com.audiopro.djmrec.audio.AudioEngine.isStreamOpen()) {
+            // Closing the live connection would yank the fd out from under libusb mid-capture
+            // (see releaseIsoCaptureConnection). Callers must stop the running session first.
+            Log.w(TAG, "openIsoCaptureHandle: a USB capture session is still open; refusing to replace its connection")
             return null
         }
         val device = usbManager.deviceList.values.firstOrNull {
@@ -601,7 +756,8 @@ class UsbAudioManager(private val context: Context) {
         }
         activeIsoConnection = connection
         info.pioneerMixerProfile?.let { profile ->
-            establishPioneerRoute(connection, profile)
+            establishPioneerRoute(connection, profile, selectedChannelOffset, includeMic)
+            applyCaptureLevel(connection, profile, captureLevelStep)
         }
         val topology = info.topology
         val streaming = topology?.audioStreamingInterfaces?.firstOrNull {
@@ -644,8 +800,11 @@ class UsbAudioManager(private val context: Context) {
                     ?.firstOrNull { it.interfaceNumber == interfaceNumber && it.alternateSetting == info.activeAlternateSetting }
                     ?.isochronousFeedbackMaxPacketSize ?: -1
             },
-            vendorId = info.vendorId,
-            productId = info.productId
+            vendorId = info.nativeVendorId,
+            productId = info.nativeProductId,
+            playbackOverride = info.captureOverride.playbackKeepalive,
+            endpointRateOverride = info.captureOverride.endpointRateCommand,
+            allowFormatMismatch = info.captureOverride.hasFormat || info.captureOverride.hasEndpoint
         )
     }
 

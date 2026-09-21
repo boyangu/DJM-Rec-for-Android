@@ -10,6 +10,19 @@ permissions:
   contents: read
 
 jobs:
+  native-tests:
+    # Header-only native helpers (PCM decode, rate resolution, Pioneer route tables, channel
+    # activity, waveform math) build with the host compiler; no NDK needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure native tests
+        run: cmake -S app/src/test/cpp -B build/native-tests -DCMAKE_BUILD_TYPE=Debug
+      - name: Build native tests
+        run: cmake --build build/native-tests --parallel
+      - name: Run native tests
+        run: ctest --test-dir build/native-tests --output-on-failure
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -28,3 +41,10 @@ jobs:
         run: sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
       - name: Lint, test, and build
         run: ./gradlew lintDebug testDebugUnitTest assembleDebug --console=plain
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DJM-Rec-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30

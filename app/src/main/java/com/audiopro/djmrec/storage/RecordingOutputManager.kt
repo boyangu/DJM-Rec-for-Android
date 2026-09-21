@@ -84,9 +84,14 @@ object RecordingOutputManager {
         runCatching { context.contentResolver.delete(output.uri, null, null) }
     }
 
+    /**
+     * Free bytes on the primary shared volume (where `Music/DJMRec` lives), or -1 when it cannot
+     * be measured. Callers must treat -1 as "unknown" (warn, keep going) -- never as unlimited,
+     * which used to disable every low-storage safeguard whenever StatFs threw.
+     */
     fun freeBytes(): Long = runCatching {
         StatFs(Environment.getExternalStorageDirectory().absolutePath).availableBytes
-    }.getOrDefault(Long.MAX_VALUE)
+    }.getOrDefault(-1L)
 
     fun recoverInterrupted(context: Context): RecoverySummary {
         val journal = RecordingSessionStore.read(context)

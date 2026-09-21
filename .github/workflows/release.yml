@@ -1,9 +1,17 @@
 name: Release Android app
 
+# Two ways in:
+#  * push a tag `vX.Y.Z` matching version.properties -> builds, verifies and publishes a GitHub
+#    Release with the signed release APK, the debug APK and their checksums;
+#  * "Run workflow" (workflow_dispatch) from any branch -> builds and verifies the same signed
+#    release APK and attaches it as a workflow artifact only (no tag, no GitHub Release).
+# Signing secrets are always required. Firebase (GOOGLE_SERVICES_JSON_BASE64) is optional: when it
+# is absent the release APK compiles with telemetry disabled.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,6 +28,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate release tag
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           VERSION=$(grep '^VERSION_NAME=' version.properties | cut -d= -f2)
@@ -29,6 +38,7 @@ jobs:
           }
 
       - name: Prepare release notes from changelog
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           python3 - <<'PY'
@@ -82,16 +92,19 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
 
-      - name: Configure Firebase
+      - name: Configure Firebase (optional)
+        id: firebase
         env:
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         shell: bash
         run: |
-          test -n "$GOOGLE_SERVICES_JSON_BASE64" || {
-            echo "GOOGLE_SERVICES_JSON_BASE64 is not configured."
-            exit 1
-          }
-          printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+          if test -n "$GOOGLE_SERVICES_JSON_BASE64"; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "GOOGLE_SERVICES_JSON_BASE64 is not configured; building the release APK with Firebase telemetry disabled."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Prepare Gradle wrapper
         run: chmod +x gradlew
@@ -100,16 +113,19 @@ jobs:
         run: sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
 
       - name: Verify and build
-        run: ./gradlew lintDebug testDebugUnitTest assembleRelease assembleDebug uploadCrashlyticsSymbolFileRelease --console=plain
+        run: ./gradlew lintDebug testDebugUnitTest assembleRelease assembleDebug --console=plain
+
+      - name: Upload Crashlytics symbols
+        if: steps.firebase.outputs.configured == 'true'
+        run: ./gradlew uploadCrashlyticsSymbolFileRelease --console=plain
 
       - name: Verify APKs and create checksums
         shell: bash
         run: |
-          APK_RELEASE=$(find app/build/outputs/apk/release -name '*-release.apk' -print -quit)
-          APK_DEBUG=$(find app/build/outputs/apk/debug -name '*-debug.apk' -print -quit)
-          test -n "$APK_RELEASE"
-          test -n "$APK_DEBUG"
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          APK_RELEASE=$(ls app/build/outputs/apk/release/*-release.apk | head -n1)
+          APK_DEBUG=$(ls app/build/outputs/apk/debug/*-debug.apk | head -n1)
+          test -n "$APK_RELEASE" && test -n "$APK_DEBUG"
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK_RELEASE"
           "$APKSIGNER" verify --verbose --print-certs "$APK_DEBUG"
@@ -118,7 +134,18 @@ jobs:
           echo "APK_RELEASE=$APK_RELEASE" >> "$GITHUB_ENV"
           echo "APK_DEBUG=$APK_DEBUG" >> "$GITHUB_ENV"
 
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DJM-Rec-release-apk
+          path: |
+            app/build/outputs/apk/release/*-release.apk
+            app/build/outputs/apk/release/*-release.apk.sha256
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
