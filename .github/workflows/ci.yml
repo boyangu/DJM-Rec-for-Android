@@ -41,3 +41,10 @@ jobs:
         run: sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
       - name: Lint, test, and build
         run: ./gradlew lintDebug testDebugUnitTest assembleDebug --console=plain
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DJM-Rec-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
