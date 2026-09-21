@@ -213,24 +213,81 @@ internal fun RecordingSetupControls(viewModel: MainViewModel) {
     val format by viewModel.selectedFormat.collectAsState()
     val gain by viewModel.recordingGainDb.collectAsState()
     val pair by viewModel.usbChannelOffset.collectAsState()
+    val includeMic by viewModel.includeMicInMix.collectAsState()
+    val captureLevel by viewModel.captureLevelStep.collectAsState()
+    val selectedRate by viewModel.selectedSampleRate.collectAsState()
     val enabled = !saving && !live.isActive && (state is RecordingState.Idle || state is RecordingState.Monitoring || state is RecordingState.Error)
+    val profile = device?.pioneerMixerProfile
     if (!enabled) Text("Capture settings locked while recording or streaming.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    if (device?.formatGuessed == true) {
+        Text("Unverified mixer profile: the wire format is assumed (12 channels, 24-bit). If audio sounds wrong, " +
+            "open Diagnostics, copy the USB descriptors and report them so the profile can be completed.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
     Text("File format", style = MaterialTheme.typography.titleSmall)
     FormatSelector(format, viewModel.availableFormats, enabled, viewModel::selectFormat)
+    val rates = device?.supportedSampleRates?.filter { it > 0 }?.distinct()?.sorted().orEmpty()
+    if (rates.size > 1) {
+        Text("Sample rate", style = MaterialTheme.typography.titleSmall)
+        OptionChips(
+            options = listOf(0 to "Auto") + rates.map { it to "${it / 1000f} kHz".replace(".0 kHz", " kHz") },
+            selected = selectedRate, enabled = enabled, onSelect = viewModel::setSampleRate
+        )
+        Text("Auto prefers 48 kHz. 96 kHz doubles file size and USB bandwidth.",
+            style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("Gain: ${if (gain > 0) "+" else ""}$gain dB", modifier = Modifier.weight(1f))
         TextButton(onClick = { viewModel.setRecordingGainDb(0) }, enabled = enabled) { Text("Reset to 0 dB") }
     }
     Slider(gain.toFloat(), { viewModel.setRecordingGainDb(it.toInt()) }, enabled = enabled,
         valueRange = -12f..24f, steps = 35, modifier = Modifier.semantics { contentDescription = "Recording gain in decibels" })
-    Text("0 dB preserves input level. Keep peaks below 0 dBFS.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    Text("Software gain applied after capture; 0 dB preserves input level. Keep peaks below 0 dBFS.",
+        style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    if (profile?.supportsCaptureLevel == true) {
+        Text("Mixer USB recording level", style = MaterialTheme.typography.titleSmall)
+        OptionChips(
+            options = listOf(-1 to "Mixer setting") + com.audiopro.djmrec.usb.PioneerMixerProfile.CAPTURE_LEVEL_STEPS_DB
+                .mapIndexed { index, db -> index to (if (db > 0) "+$db dB" else "0 dB") },
+            selected = captureLevel, enabled = enabled, onSelect = viewModel::setCaptureLevelStep
+        )
+        Text("Sets the ${profile.displayName}'s own USB send level (the Setting Utility's recording level), " +
+            "applied in the mixer before the audio reaches the phone. Prefer this over software gain.",
+            style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    }
+    if (profile?.supportsMicToggle == true) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Include microphone", style = MaterialTheme.typography.titleSmall)
+                Text("Route REC OUT with the mic bus (on) or REC OUT without mic (off) to the recorded USB pair.",
+                    style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
+            Switch(includeMic, viewModel::setIncludeMicInMix, enabled = enabled)
+        }
+    }
     if (device?.requiresIsoCapture == true) {
         Text("Stereo input pair", style = MaterialTheme.typography.titleSmall)
         ChannelPairSelector(pair, device!!.channelCount / 2, enabled, viewModel::setUsbChannelOffset)
         Text(device?.allInOneProfile?.recordChannelOffset?.let { "Auto: master return on USB ${it + 1}/${it + 2}." }
-            ?: if (device?.pioneerMixerProfile == null) "Auto uses USB 1/2. Choose another pair to audition it before recording."
-            else "Auto locks an audible pair; S11 uses dedicated REC OUT. Selection is remembered per mixer.",
+            ?: if (profile == null) "Auto uses USB 1/2. Choose another pair to audition it before recording."
+            else "Auto locks an audible pair. A chosen pair is routed to MIX/REC OUT on the mixer first " +
+                "(default USB ${profile.defaultCaptureChannelOffset + 1}/${profile.defaultCaptureChannelOffset + 2}); " +
+                "S11 uses its dedicated REC OUT. Selection is remembered per mixer.",
             style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    }
+}
+
+/** Single-select chip row used for sample rate and mixer capture level. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OptionChips(options: List<Pair<Int, String>>, selected: Int, enabled: Boolean, onSelect: (Int) -> Unit) {
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { (value, label) ->
+            FilterChip(selected = value == selected, enabled = enabled, onClick = { onSelect(value) },
+                label = { Text(label) }, modifier = Modifier.heightIn(min = 40.dp))
+        }
     }
 }
 

@@ -4,6 +4,8 @@
 
 #include <android/log.h>
 #include <libusb.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cmath>
@@ -275,11 +277,18 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     mCallback = std::move(callback);
     mClaimedPlaybackInterface = -1;
     mPlaybackTransfers.clear();
-    mPlaybackFrameRemainder = 0;
+    {
+        std::lock_guard<std::mutex> lock(mPlaybackMutex);
+        mPlaybackFrameRemainder = 0;
+    }
     mPioneerFallbackStage = 0;
+    mRouteFallbackRequested.store(false, std::memory_order_relaxed);
+    mTransportFault.store(false, std::memory_order_relaxed);
+    mConsecutiveTransferErrors = 0;
+    mActivityPacketCounter = 0;
     mEndpointRateSetResult = -999;
-    mDjm450RouteSetResult = -999;
-    mDjm450RouteValue = -1;
+    mSetupRouteSetResult = -999;
+    mSetupRouteValue = -1;
     mResolvedChannelOffset = config.extractChannelOffset;
     mFramesSincePeakLog = 0;
     mLoggedPayloadWindow = false;
@@ -333,7 +342,7 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     const int captureSpeed = libusb_get_device_speed(libusb_get_device(mHandle));
     if (captureEndpoint.address >= 0 && captureSpeed >= LIBUSB_SPEED_FULL) {
         const int base = captureSpeed >= LIBUSB_SPEED_HIGH ? 8000 : 1000;
-        mCapturePacketsPerSecond = base >> std::clamp(captureEndpoint.interval - 1, 0, 15);
+        mCapturePacketsPerSecond = std::max(1, base >> std::clamp(captureEndpoint.interval - 1, 0, 10));
     }
 
     // Best-effort; harmless if unsupported (Android has no competing kernel audio-class driver
@@ -397,7 +406,12 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         }
     }
 
-    rc = libusb_claim_interface(mHandle, config.interfaceNumber);
+    // Models whose OUT keepalive endpoint shares the capture interface (DJM-V10, DJM-900NXS2,
+    // DJM-750MK2, DJM-450: if0/alt1 for both) were claimed above already; claiming the same
+    // interface twice is a libusb no-op but muddles the error/teardown paths, so skip it.
+    rc = mClaimedPlaybackInterface == config.interfaceNumber
+        ? LIBUSB_SUCCESS
+        : libusb_claim_interface(mHandle, config.interfaceNumber);
     if (rc != LIBUSB_SUCCESS) {
         restorePioneerRecordingRoute();
         if (mClaimedPlaybackInterface >= 0) {
@@ -499,26 +513,35 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         }
     }
 
-    if (mMixerProfile == &kDjm450Profile) {
-        // The DJM-450 has a documented SET mapping but no established route GET. Apply the
-        // selected MIX route once, after interface/rate setup and before any transfers run.
-        // Do not invent readback/restore semantics or block the USB event thread with retries.
-        const int value = pioneerMixRouteValue(*mMixerProfile, config.extractChannelOffset);
-        mDjm450RouteValue = value;
+    if (mMixerProfile && mMixerProfile->routeReadMode == PioneerRouteReadMode::None) {
+        // DJM-450, DJM-V10 and DJM-S11 have a documented SET mapping but no established route
+        // GET (the Linux driver never reads this register either). Apply the *selected* MIX
+        // route once, after interface/rate setup and before any transfers run -- this is what
+        // makes picking USB 5/6 on a V10 actually record MIX on USB 5/6. Do not invent
+        // readback/restore semantics or block the USB event thread with retries.
+        const int value = pioneerMixRouteValue(
+            *mMixerProfile, config.extractChannelOffset, config.includeMicInMix);
+        mSetupRouteValue = value;
         if (value >= 0) {
             const int result = libusb_control_transfer(
                 mHandle, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE,
                 0x03, static_cast<uint16_t>(value), kPioneerRouteIndex, nullptr, 0, 1000);
-            mDjm450RouteSetResult = result;
-            LOGI("DJM-450 MIX route SET value=0x%04x result=%d; rate SET result=%d",
-                 value, result, mEndpointRateSetResult.load());
-            if (result != 0) {
+            mSetupRouteSetResult = result;
+            LOGI("%s MIX route SET value=0x%04x result=%d; rate SET result=%d",
+                 mMixerProfile->name, value, result, mEndpointRateSetResult.load());
+            if (result != 0 && mMixerProfile == &kDjm450Profile) {
+                // Only the 450 path is known to be unusable without this write.
                 const auto error = libusbErrorString("DJM-450 MIX/REC OUT route SET", result);
                 stop();
                 return error;
             }
-            std::lock_guard<std::mutex> lock(mDiagnosticMutex);
-            mPioneerAppliedSources[(value >> 8) - 1] = value & 0xff;
+            if (result == 0) {
+                std::lock_guard<std::mutex> lock(mDiagnosticMutex);
+                mPioneerAppliedSources[(value >> 8) - 1] = value & 0xff;
+            } else {
+                LOGW("%s MIX route SET failed (%s); recording whatever the mixer currently routes",
+                     mMixerProfile->name, libusb_error_name(result));
+            }
         }
     }
 
@@ -533,7 +556,10 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         }
         LOGW("%s could not start playback traffic; continuing capture-only", mMixerProfile->name);
     }
-    if (mMixerProfile == &kDjm450Profile) mPioneerFallbackStage = 0;
+    if (mMixerProfile && mMixerProfile->routeReadMode == PioneerRouteReadMode::None) {
+        // Write-only models: there is no GET to base a "route everything" fallback on.
+        mPioneerFallbackStage = 0;
+    }
 
     const std::string channelDescription = config.extractChannelOffset < 0
         ? "auto stereo pair"
@@ -605,14 +631,16 @@ bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
     }
 
     const int speed = libusb_get_device_speed(libusb_get_device(mHandle));
-    const int basePacketsPerSecond =
-        (speed == LIBUSB_SPEED_HIGH || speed == LIBUSB_SPEED_SUPER) ? 8000 : 1000;
+    const int basePacketsPerSecond = speed >= LIBUSB_SPEED_HIGH ? 8000 : 1000;
     const int intervalShift = std::clamp(endpoint.interval - 1, 0, 10);
     mPlaybackPacketsPerSecond = std::max(1, basePacketsPerSecond >> intervalShift);
     mPlaybackFrameBytes =
         mMixerProfile->playbackOutChannels * mMixerProfile->playbackOutSubframeBytes;
     mPlaybackMaxPacketSize = endpoint.maxPacketSize;
-    mPlaybackFrameRemainder = 0;
+    {
+        std::lock_guard<std::mutex> lock(mPlaybackMutex);
+        mPlaybackFrameRemainder = 0;
+    }
 
     mPlaybackTransfers.reserve(kNumTransfers);
     for (int index = 0; index < kNumTransfers; ++index) {
@@ -634,20 +662,28 @@ bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
 }
 
 bool UsbIsoAudioSource::submitPlaybackTransfer(libusb_transfer* transfer) {
-    const int sampleRate = std::max(1, mOpenedSampleRate.load(std::memory_order_acquire));
+    const int sampleRate = mOpenedSampleRate.load(std::memory_order_acquire);
+    if (sampleRate <= 0 || mPlaybackPacketsPerSecond <= 0 || mPlaybackFrameBytes <= 0) {
+        LOGE("Pioneer playback pacing unavailable (rate=%d, packets/s=%d)", sampleRate,
+             mPlaybackPacketsPerSecond);
+        return false;
+    }
     int totalLength = 0;
-    for (int packetIndex = 0; packetIndex < transfer->num_iso_packets; ++packetIndex) {
-        mPlaybackFrameRemainder += static_cast<uint64_t>(sampleRate);
-        const int frames = static_cast<int>(mPlaybackFrameRemainder / mPlaybackPacketsPerSecond);
-        mPlaybackFrameRemainder %= static_cast<uint64_t>(mPlaybackPacketsPerSecond);
-        const int packetLength = frames * mPlaybackFrameBytes;
-        if (packetLength <= 0 || packetLength > mPlaybackMaxPacketSize) {
-            LOGE("Pioneer playback packet %d exceeds endpoint capacity %d", packetLength,
-                 mPlaybackMaxPacketSize);
-            return false;
+    {
+        std::lock_guard<std::mutex> lock(mPlaybackMutex);
+        for (int packetIndex = 0; packetIndex < transfer->num_iso_packets; ++packetIndex) {
+            mPlaybackFrameRemainder += static_cast<uint64_t>(sampleRate);
+            const int frames = static_cast<int>(mPlaybackFrameRemainder / mPlaybackPacketsPerSecond);
+            mPlaybackFrameRemainder %= static_cast<uint64_t>(mPlaybackPacketsPerSecond);
+            const int packetLength = frames * mPlaybackFrameBytes;
+            if (packetLength <= 0 || packetLength > mPlaybackMaxPacketSize) {
+                LOGE("Pioneer playback packet %d exceeds endpoint capacity %d", packetLength,
+                     mPlaybackMaxPacketSize);
+                return false;
+            }
+            transfer->iso_packet_desc[packetIndex].length = static_cast<unsigned int>(packetLength);
+            totalLength += packetLength;
         }
-        transfer->iso_packet_desc[packetIndex].length = static_cast<unsigned int>(packetLength);
-        totalLength += packetLength;
     }
     transfer->length = totalLength;
     mOutstandingTransfers.fetch_add(1, std::memory_order_relaxed);
@@ -672,6 +708,18 @@ bool UsbIsoAudioSource::submitTransfer(libusb_transfer* transfer) {
 }
 
 void UsbIsoAudioSource::eventThreadLoop() {
+    // This thread reaps every isochronous URB and runs the demux/meter callback chain. Android
+    // lets an app raise its own threads to the audio priorities (Process.THREAD_PRIORITY_URGENT_AUDIO
+    // = -19 is what AAudio uses for its callback thread); left at the default nice 0 it competes
+    // with UI work on big.LITTLE schedulers and shows up as packets_missed under load.
+    {
+        const pid_t tid = gettid();
+        int applied = 0;
+        for (const int level : {-19, -16, -10}) {
+            if (setpriority(PRIO_PROCESS, static_cast<id_t>(tid), level) == 0) { applied = level; break; }
+        }
+        LOGI("USB event thread priority: nice %d", applied);
+    }
     struct timeval tv {};
     tv.tv_usec = 100 * 1000; // 100ms -- just needs to be short enough to notice mRunning flip
     try {
@@ -705,13 +753,26 @@ void UsbIsoAudioSource::handlePlaybackTransfer(libusb_transfer* transfer) {
     mOutstandingTransfers.fetch_sub(1, std::memory_order_relaxed);
     if (!mRunning.load(std::memory_order_acquire)) return;
 
+    if (transfer->status == LIBUSB_TRANSFER_CANCELLED) return;
+    if (transfer->status == LIBUSB_TRANSFER_NO_DEVICE) {
+        failTransport("playback endpoint reports the device is gone");
+        return;
+    }
     if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
         LOGW("Pioneer playback transfer completed with status %d", transfer->status);
     }
     if (!submitPlaybackTransfer(transfer)) {
         mResubmitFailures.fetch_add(1, std::memory_order_relaxed);
-        mRunning.store(false, std::memory_order_release);
+        failTransport("playback keepalive re-submit failed");
     }
+}
+
+void UsbIsoAudioSource::failTransport(const char* reason) {
+    if (!mTransportFault.exchange(true, std::memory_order_acq_rel)) {
+        LOGE("USB capture transport failed: %s", reason);
+    }
+    mRunning.store(false, std::memory_order_release);
+    mRateProbeReady.notify_all();
 }
 
 void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
@@ -721,6 +782,36 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
         // Shutting down -- this transfer is done for good; stop() frees it once every
         // outstanding transfer has drained back through here.
         return;
+    }
+
+    switch (transfer->status) {
+        case LIBUSB_TRANSFER_COMPLETED:
+            mConsecutiveTransferErrors = 0;
+            break;
+        case LIBUSB_TRANSFER_CANCELLED:
+            // Only stop() cancels; it frees the transfer once the count drains.
+            return;
+        case LIBUSB_TRANSFER_NO_DEVICE:
+            failTransport("capture endpoint reports the device is gone (unplugged?)");
+            return;
+        default:
+            // STALL / ERROR / TIMED_OUT / OVERFLOW on the whole URB: none of its packets carry
+            // audio. Count them as missed, then resubmit; a run of these means the endpoint is
+            // dead (a halted iso endpoint cannot be cleared from this thread -- libusb_clear_halt
+            // is a synchronous control transfer -- so give up and let the Kotlin side reopen).
+            mPacketsMissed.fetch_add(static_cast<uint64_t>(transfer->num_iso_packets),
+                                     std::memory_order_relaxed);
+            if (++mConsecutiveTransferErrors >= kMaxConsecutiveTransferErrors) {
+                LOGE("USB capture transfer failed %d times in a row (last status %d)",
+                     mConsecutiveTransferErrors, transfer->status);
+                failTransport("repeated isochronous transfer errors");
+                return;
+            }
+            if (!submitTransfer(transfer)) {
+                mResubmitFailures.fetch_add(1, std::memory_order_relaxed);
+                failTransport("re-submit after transfer error failed");
+            }
+            return;
     }
 
     for (int i = 0; i < transfer->num_iso_packets; ++i) {
@@ -747,8 +838,7 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
 
     if (!submitTransfer(transfer)) {
         mResubmitFailures.fetch_add(1, std::memory_order_relaxed);
-        LOGE("Re-submit failed after completed transfer; stopping capture");
-        mRunning.store(false, std::memory_order_release);
+        failTransport("re-submit failed after completed transfer");
     }
 }
 
@@ -800,12 +890,14 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
         << " transfers:" << mPlaybackTransfers.size() << '\n'
         << "route_fallback_stage=" << mPioneerFallbackStage.load(std::memory_order_relaxed) << '\n';
 
-    if (mMixerProfile == &kDjm450Profile) {
+    if (mMixerProfile && mMixerProfile->routeReadMode == PioneerRouteReadMode::None) {
         out << "capture_setup=rate_set_result:" << mEndpointRateSetResult.load()
-            << " route_value:" << mDjm450RouteValue.load()
-            << " route_set_result:" << mDjm450RouteSetResult.load()
+            << " route_value:" << mSetupRouteValue.load()
+            << " route_set_result:" << mSetupRouteSetResult.load()
             << " route_readback:unsupported\n";
     }
+    out << "transport_fault=" << (hasTransportFault() ? "true" : "false")
+        << " include_mic=" << (mConfig.includeMicInMix ? "true" : "false") << '\n';
 
     if (mMixerProfile) {
         for (int output = 0; output < mMixerProfile->outputCount; ++output) {
@@ -835,8 +927,9 @@ void UsbIsoAudioSource::configurePioneerRecordingRoute() {
     }
     if (!mHandle || !mMixerProfile) return;
 
-    // Write-only DJM-450 setup runs once after SET_INTERFACE and sample-rate initialization.
-    if (mMixerProfile == &kDjm450Profile) return;
+    // Write-only models (no route GET: DJM-450, DJM-V10, DJM-S11) are configured once in start()
+    // after SET_INTERFACE and sample-rate initialization, with the selected pair.
+    if (mMixerProfile->routeReadMode == PioneerRouteReadMode::None) return;
 
     int output = mMixerProfile->defaultOutput;
     if (mConfig.extractChannelOffset >= 0) {
@@ -868,10 +961,9 @@ void UsbIsoAudioSource::routePioneerOutputToMix(int output) {
              mMixerProfile->name, output + 1);
         return;
     }
-    const int mixWithMicSource = mMixerProfile->mixWithMicSources[output];
-    const int mixWithoutMicSource = mMixerProfile->mixWithoutMicSources[output];
-    if (mixWithoutMicSource < 0) return;
-    if (currentSource == mixWithMicSource || currentSource == mixWithoutMicSource) {
+    const int targetSource = pioneerMixSource(*mMixerProfile, output, mConfig.includeMicInMix);
+    if (targetSource < 0) return;
+    if (currentSource == targetSource) {
         std::lock_guard<std::mutex> lock(mDiagnosticMutex);
         mPioneerAppliedSources[output] = currentSource;
         LOGI("%s USB output %d already routed to MIX (source 0x%02x)",
@@ -879,50 +971,48 @@ void UsbIsoAudioSource::routePioneerOutputToMix(int output) {
         return;
     }
 
-    if (!writePioneerRouteSource(
-            mHandle, *mMixerProfile, output, mixWithoutMicSource)) return;
+    if (!writePioneerRouteSource(mHandle, *mMixerProfile, output, targetSource)) return;
     int verifiedSource = -1;
     if (!readPioneerRouteSource(mHandle, *mMixerProfile, output, verifiedSource) ||
-        verifiedSource != mixWithoutMicSource) {
+        verifiedSource != targetSource) {
         LOGW("%s USB output %d MIX source did not verify: expected=0x%02x actual=0x%02x",
-             mMixerProfile->name, output + 1, mixWithoutMicSource, verifiedSource);
+             mMixerProfile->name, output + 1, targetSource, verifiedSource);
         writePioneerRouteSource(mHandle, *mMixerProfile, output, currentSource);
         return;
     }
     {
         std::lock_guard<std::mutex> lock(mDiagnosticMutex);
         mPioneerOriginalSources[output] = currentSource;
-        mPioneerAppliedSources[output] = mixWithoutMicSource;
+        mPioneerAppliedSources[output] = targetSource;
         mPioneerRoutesChanged[output] = true;
     }
     LOGI("%s USB output %d routed to MIX/REC OUT, source=0x%02x previous=0x%02x",
-         mMixerProfile->name, output + 1, mixWithoutMicSource, currentSource);
-}
-
-void UsbIsoAudioSource::routeAllPioneerOutputsToMix() {
-    if (!mMixerProfile) return;
-    LOGI("%s fallback: route MIX to all %d configurable USB output pairs",
-         mMixerProfile->name, mMixerProfile->outputCount);
-    for (int output = 0; output < mMixerProfile->outputCount; ++output) {
-        routePioneerOutputToMix(output);
-    }
+         mMixerProfile->name, output + 1, targetSource, currentSource);
 }
 
 void UsbIsoAudioSource::restorePioneerRecordingRoute() {
     if (!mHandle || !mMixerProfile) return;
+    std::array<int, 6> original{};
+    std::array<int, 6> applied{};
+    std::array<bool, 6> changed{};
+    {
+        std::lock_guard<std::mutex> lock(mDiagnosticMutex);
+        original = mPioneerOriginalSources;
+        applied = mPioneerAppliedSources;
+        changed = mPioneerRoutesChanged;
+    }
     for (int output = 0; output < mMixerProfile->outputCount; ++output) {
-        if (!mPioneerRoutesChanged[output] || mPioneerOriginalSources[output] < 0) continue;
+        if (!changed[output] || original[output] < 0) continue;
         int currentSource = -1;
         if (!readPioneerRouteSource(mHandle, *mMixerProfile, output, currentSource) ||
-            currentSource != mPioneerAppliedSources[output]) {
+            currentSource != applied[output]) {
             LOGW("%s USB output %d changed externally; not restoring previous route",
                  mMixerProfile->name, output + 1);
             continue;
         }
-        if (writePioneerRouteSource(
-                mHandle, *mMixerProfile, output, mPioneerOriginalSources[output])) {
+        if (writePioneerRouteSource(mHandle, *mMixerProfile, output, original[output])) {
             LOGI("%s USB output %d restored to source 0x%02x", mMixerProfile->name,
-                 output + 1, mPioneerOriginalSources[output]);
+                 output + 1, original[output]);
         }
         {
             std::lock_guard<std::mutex> lock(mDiagnosticMutex);
@@ -1024,8 +1114,11 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
         }
 
         const int subframe = mConfig.subframeSize;
-        mChannelActivity.observe(mWorking.data(), completeFrames, mConfig.totalChannels, subframe,
-            mMixerProfile && mConfig.bitResolution <= 24);
+        if (++mActivityPacketCounter >= kActivityDecimation) {
+            mActivityPacketCounter = 0;
+            mChannelActivity.observe(mWorking.data(), completeFrames, mConfig.totalChannels, subframe,
+                mMixerProfile && mConfig.bitResolution <= 24);
+        }
         for (int offset = 0; offset + 1 < mConfig.totalChannels; offset += 2) {
             const auto pairMagnitude = std::max(mChannelActivity.peak(offset), mChannelActivity.peak(offset + 1));
             const size_t pairIndex = static_cast<size_t>(offset / 2);
@@ -1068,7 +1161,7 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
                 // mNonZeroBytesReceived is cumulative for the whole session -- a single stray
                 // nonzero byte anywhere in the stream's history (isochronous framing glitch at
                 // startup, USB electrical noise) would satisfy ">0" forever and latch this
-                // fallback into "succeeded", permanently skipping routeAllPioneerOutputsToMix()
+                // fallback into "succeeded", permanently skipping the route-all fallback request
                 // even if every window since has been 100% silent. Use the per-window counter
                 // instead so "succeeded" means *this* window actually carried signal.
                 if (mNonZeroBytesSincePeakLog > 0 &&
@@ -1077,8 +1170,14 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
                          mMixerProfile->name, fallbackStage);
                     mPioneerFallbackStage.store(3, std::memory_order_relaxed);
                 } else if (mNonZeroBytesSincePeakLog == 0 && fallbackStage == 1) {
+                    // Never issue vendor control transfers from this (libusb event) thread:
+                    // libusb's synchronous API re-enters the event loop and each request can
+                    // stall the isochronous stream for up to its 1 s timeout. Hand the request
+                    // to the Kotlin side, which owns a separate UsbDeviceConnection path.
                     mPioneerFallbackStage.store(2, std::memory_order_relaxed);
-                    routeAllPioneerOutputsToMix();
+                    mRouteFallbackRequested.store(true, std::memory_order_release);
+                    LOGI("%s fallback strategy 2 requested: route MIX to all configurable pairs "
+                         "via the host control path", mMixerProfile->name);
                 } else if (mNonZeroBytesSincePeakLog == 0 && fallbackStage == 2) {
                     LOGW("%s fallback strategies exhausted: all MIX routes still produce an "
                          "all-zero capture payload", mMixerProfile->name);

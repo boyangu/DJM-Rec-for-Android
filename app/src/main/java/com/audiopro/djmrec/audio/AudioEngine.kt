@@ -51,6 +51,8 @@ object AudioEngine {
      * @param extractChannelOffset 0-indexed first channel of the stereo pair to pull out.
      * @param sampleRateHint trusted as-is; nothing in this path negotiates a rate back from
      *   the device the way AAudio does.
+     * @param includeMicInMix route REC OUT *with* the mic bus (vendor source 0x0a) instead of
+     *   "REC OUT without mic" (0x0e) on Pioneer models that offer both.
      * @return `sampleRateHint` on success, or -1 on failure.
      */
     external fun openUsbIso(
@@ -71,7 +73,8 @@ object AudioEngine {
         vendorId: Int,
         productId: Int,
         rawDescriptors: ByteArray,
-        sampleRateHint: Int
+        sampleRateHint: Int,
+        includeMicInMix: Boolean
     ): Int
 
     /**
@@ -89,7 +92,17 @@ object AudioEngine {
 
     external fun getRecordingErrorCode(): Int
 
+    /** False once the stream is closed *or* the raw USB transport has died (unplug, repeated
+     *  transfer errors); the health check treats either as "stream closed". */
     external fun isStreamOpen(): Boolean
+
+    /**
+     * True exactly once per request from the native capture thread asking the host to route every
+     * configurable Pioneer MIX pair (fallback after a fully silent first window). The caller
+     * performs the vendor control transfers over its own `UsbDeviceConnection`; native code never
+     * issues them from the libusb event thread.
+     */
+    external fun takeRouteFallbackRequest(): Boolean
 
     /** Starts/stops independent stereo PCM tap used by AAC livestream encoder. */
     external fun startLivePcm(): Boolean

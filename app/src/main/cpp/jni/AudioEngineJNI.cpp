@@ -42,7 +42,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
     jint clockControlInterfaceNumber, jint clockSourceId, jboolean clockSupportsFrequencySet,
     jint feedbackEndpointAddress, jint feedbackMaxPacketSize, jint vendorId, jint productId,
     jbyteArray rawDescriptors,
-    jint sampleRateHint) {
+    jint sampleRateHint, jboolean includeMicInMix) {
     djmrec::UsbIsoAudioSource::Config config;
     config.fd = fd;
     config.interfaceNumber = interfaceNumber;
@@ -61,6 +61,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
     config.feedbackMaxPacketSize = feedbackMaxPacketSize;
     config.vendorId = vendorId;
     config.productId = productId;
+    config.includeMicInMix = includeMicInMix == JNI_TRUE;
     if (rawDescriptors) {
         const jsize length = env->GetArrayLength(rawDescriptors);
         const auto* bytes = env->GetByteArrayElements(rawDescriptors, nullptr);
@@ -111,6 +112,11 @@ Java_com_audiopro_djmrec_audio_AudioEngine_getRecordingErrorCode(JNIEnv* /*env*/
 JNIEXPORT jboolean JNICALL
 Java_com_audiopro_djmrec_audio_AudioEngine_isStreamOpen(JNIEnv* /*env*/, jobject /*thiz*/) {
     return UsbAudioEngine::instance().isStreamOpen() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_audiopro_djmrec_audio_AudioEngine_takeRouteFallbackRequest(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return UsbAudioEngine::instance().takeRouteFallbackRequest() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -165,6 +171,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_getLevels(JNIEnv* env, jobject /*thiz
     UsbAudioEngine::instance().getLevels(levels);
 
     jfloatArray result = env->NewFloatArray(4);
+    if (!result) return nullptr; // OutOfMemoryError already pending
     env->SetFloatArrayRegion(result, 0, 4, levels);
     return result;
 }
@@ -193,6 +200,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_getUsbIsoTransferStats(JNIEnv* env, j
         values[index] = static_cast<jlong>(stats[index]);
     }
     jlongArray result = env->NewLongArray(7);
+    if (!result) return nullptr;
     env->SetLongArrayRegion(result, 0, 7, values);
     return result;
 }
@@ -210,6 +218,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_getWaveformBins(JNIEnv* env, jobject 
     UsbAudioEngine::instance().getWaveformBins(bins);
 
     jfloatArray result = env->NewFloatArray(kFloats);
+    if (!result) return nullptr;
     env->SetFloatArrayRegion(result, 0, kFloats, bins);
     return result;
 }

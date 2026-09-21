@@ -363,9 +363,10 @@ object UsbAudioDescriptorParser {
                 DT_ENDPOINT -> if (currentIsAudioStreaming) {
                     // Standard Endpoint Descriptor:
                     // 2 bEndpointAddress, 3 bmAttributes, 4-5 wMaxPacketSize (LE; bits 0-10 are
-                    // the actual size, bits 11-12 are extra high-speed-only transactions/uframe,
-                    // which we don't need to mask off separately since UAC2 iso IN endpoints on
-                    // full/high-speed Android hosts don't use them here).
+                    // the per-transaction size, bits 11-12 the number of *additional* high-speed
+                    // transactions per microframe). The native side sizes its URB buffers from
+                    // this value, so report the full per-microframe payload exactly like
+                    // UsbIsoAudioSource::findIsoOutEndpoint does.
                     val address = rawDescriptors[offset + 2].toInt() and 0xFF
                     val attributes = rawDescriptors[offset + 3].toInt() and 0xFF
                     val isIn = (address and ENDPOINT_DIR_IN_MASK) != 0
@@ -374,18 +375,12 @@ object UsbAudioDescriptorParser {
                     if (isIn && isIsochronous && ((attributes shr 4) and 0x03) != 0x01) {
                         pendingIsoInEndpoint = address
                         if (offset + 5 < rawDescriptors.size) {
-                            val wMaxPacketSizeRaw =
-                                (rawDescriptors[offset + 4].toInt() and 0xFF) or
-                                    ((rawDescriptors[offset + 5].toInt() and 0xFF) shl 8)
-                            pendingIsoInMaxPacketSize = wMaxPacketSizeRaw and 0x7FF
+                            pendingIsoInMaxPacketSize = isoPayloadPerInterval(rawDescriptors, offset)
                         }
                     } else if (isIsochronous && ((attributes shr 4) and 0x03) == 0x01) {
                         pendingIsoFeedbackEndpoint = address
                         if (offset + 5 < rawDescriptors.size) {
-                            val wMaxPacketSizeRaw =
-                                (rawDescriptors[offset + 4].toInt() and 0xFF) or
-                                    ((rawDescriptors[offset + 5].toInt() and 0xFF) shl 8)
-                            pendingIsoFeedbackMaxPacketSize = wMaxPacketSizeRaw and 0x7FF
+                            pendingIsoFeedbackMaxPacketSize = isoPayloadPerInterval(rawDescriptors, offset)
                         }
                     }
                 }
@@ -444,10 +439,7 @@ object UsbAudioDescriptorParser {
                     val isIsochronous =
                         (attributes and ENDPOINT_ATTR_TRANSFER_TYPE_MASK) == ENDPOINT_ATTR_TRANSFER_TYPE_ISOCHRONOUS
                     if (offset + 5 < rawDescriptors.size) {
-                        val wMaxPacketSizeRaw =
-                            (rawDescriptors[offset + 4].toInt() and 0xFF) or
-                                ((rawDescriptors[offset + 5].toInt() and 0xFF) shl 8)
-                        val maxPacketSize = wMaxPacketSizeRaw and 0x7FF
+                        val maxPacketSize = isoPayloadPerInterval(rawDescriptors, offset)
                         if (isIn && isIsochronous && ((attributes shr 4) and 0x03) != 0x01) {
                             isoInEndpoint = address
                             isoInMaxPacketSize = maxPacketSize
@@ -474,6 +466,65 @@ object UsbAudioDescriptorParser {
             isochronousFeedbackEndpointAddress = isoFeedbackEndpoint,
             isochronousFeedbackMaxPacketSize = isoFeedbackMaxPacketSize
         )
+    }
+
+    /** wMaxPacketSize bits 0-10 times (1 + additional transactions in bits 11-12). */
+    private fun isoPayloadPerInterval(rawDescriptors: ByteArray, endpointOffset: Int): Int {
+        val raw = (rawDescriptors[endpointOffset + 4].toInt() and 0xFF) or
+            ((rawDescriptors[endpointOffset + 5].toInt() and 0xFF) shl 8)
+        return (raw and 0x7FF) * (1 + ((raw shr 11) and 0x03))
+    }
+
+    /**
+     * Generic vendor-class fallback: scans *every* (interface, alt setting) in the configuration
+     * for an isochronous IN data endpoint regardless of declared class and returns the
+     * candidates. Used for AlphaTheta mixers without a per-model profile (or whose profile has no
+     * vendor override) that, like the DJM-900NXS2 / DJM-V10, hide their audio behind a
+     * USB_CLASS_VENDOR_SPEC interface. Channel count / bit depth cannot be read from such
+     * descriptors -- callers supply a template and rely on the pair picker plus diagnostics.
+     */
+    internal fun findAnyIsoInEndpoints(rawDescriptors: ByteArray): List<AudioStreamingInterfaceInfo> {
+        val results = mutableListOf<AudioStreamingInterfaceInfo>()
+        var offset = 0
+        var currentInterfaceNumber = -1
+        var currentAlternateSetting = -1
+        var currentClass = -1
+        while (offset + 1 < rawDescriptors.size) {
+            val bLength = rawDescriptors[offset].toInt() and 0xFF
+            if (bLength < 2 || offset + bLength > rawDescriptors.size) break
+            val bDescriptorType = rawDescriptors[offset + 1].toInt() and 0xFF
+            when (bDescriptorType) {
+                DT_INTERFACE -> if (bLength >= 9) {
+                    currentInterfaceNumber = rawDescriptors[offset + 2].toInt() and 0xFF
+                    currentAlternateSetting = rawDescriptors[offset + 3].toInt() and 0xFF
+                    currentClass = rawDescriptors[offset + 5].toInt() and 0xFF
+                }
+                DT_ENDPOINT -> if (bLength >= 7 && currentInterfaceNumber >= 0 && offset + 5 < rawDescriptors.size) {
+                    val address = rawDescriptors[offset + 2].toInt() and 0xFF
+                    val attributes = rawDescriptors[offset + 3].toInt() and 0xFF
+                    val isIn = (address and ENDPOINT_DIR_IN_MASK) != 0
+                    val isIsochronous =
+                        (attributes and ENDPOINT_ATTR_TRANSFER_TYPE_MASK) == ENDPOINT_ATTR_TRANSFER_TYPE_ISOCHRONOUS
+                    val isFeedback = ((attributes shr 4) and 0x03) == 0x01
+                    if (isIn && isIsochronous && !isFeedback) {
+                        results += AudioStreamingInterfaceInfo(
+                            interfaceNumber = currentInterfaceNumber,
+                            alternateSetting = currentAlternateSetting,
+                            terminalLink = -1,
+                            channelCount = 0,
+                            bitResolution = 0,
+                            subframeSize = 0,
+                            isochronousInEndpointAddress = address,
+                            isochronousInMaxPacketSize = isoPayloadPerInterval(rawDescriptors, offset),
+                            sampleRates = emptyList(),
+                            interfaceClass = currentClass
+                        )
+                    }
+                }
+            }
+            offset += bLength
+        }
+        return results
     }
 
     /**

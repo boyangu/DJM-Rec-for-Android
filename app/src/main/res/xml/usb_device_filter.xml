@@ -1,23 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Match standard UAC devices plus supported Pioneer vendor-class devices.
+    Match standard UAC devices plus every AlphaTheta / Pioneer DJ (vendor 0x2B73 = 11123)
+    device. Several DJM mixers hide their audio behind a vendor-specific interface class, so a
+    class="1" filter alone would never launch the app for them; matching the whole vendor also
+    covers models whose product IDs are not yet known (e.g. DJM-V5 variants).
     Fine-grained interface/endpoint validation still happens in UsbAudioManager.
 -->
 <resources>
-    <usb-device vendor-id="11123" product-id="45" />  <!-- XDJ-XZ -->
-    <usb-device vendor-id="11123" product-id="61" />  <!-- XDJ-RX3: detect and explain capture limitations -->
-    <usb-device vendor-id="11123" product-id="67" />  <!-- OPUS-QUAD -->
-    <usb-device vendor-id="11123" product-id="72" />  <!-- OMNIS-DUO -->
-    <usb-device vendor-id="11123" product-id="74" />  <!-- XDJ-AZ -->
     <usb-device class="1" />
-    <usb-device vendor-id="11123" product-id="10" />  <!-- DJM-900NXS2 -->
-    <usb-device vendor-id="11123" product-id="19" />  <!-- DJM-450 -->
-    <usb-device vendor-id="11123" product-id="27" />  <!-- DJM-750MK2 -->
-    <usb-device vendor-id="11123" product-id="52" />  <!-- DJM-V10 -->
-    <usb-device vendor-id="11123" product-id="60" />  <!-- DJM-A9 -->
-    <usb-device vendor-id="11123" product-id="88" />  <!-- DJM-V5 -->
-    <usb-device vendor-id="11123" product-id="89" />  <!-- DJM-V5-LF -->
-    <usb-device vendor-id="11123" product-id="90" />  <!-- DJM-V5-W -->
-    <usb-device vendor-id="11123" product-id="91" />  <!-- DJM-V5-W-LF -->
-    <usb-device vendor-id="11123" product-id="55" />  <!-- DJM-S11 -->
+    <usb-device vendor-id="11123" />  <!-- AlphaTheta / Pioneer DJ: DJM-900NXS2 (10), DJM-450 (19),
+                                           DJM-750MK2 (27), DJM-V10 (52), DJM-S11 (55), DJM-A9 (60),
+                                           DJM-V5 (88-91, unverified), XDJ-XZ (45), XDJ-RX3 (61),
+                                           OPUS-QUAD (67), OMNIS-DUO (72), XDJ-AZ (74) -->
 </resources>

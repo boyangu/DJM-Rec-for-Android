@@ -148,7 +148,7 @@ internal object UsbDiagnosticsCollector {
                 "protocol contract: vendor GET request=${hex2(PioneerMixerProfile.ROUTE_GET_REQUEST)} " +
                     "SET request=${hex2(PioneerMixerProfile.ROUTE_SET_REQUEST)} " +
                     "index=${hex4(PioneerMixerProfile.ROUTE_INDEX)} readMode=${profile.routeReadMode} " +
-                    "readLength=${profile.routeReadMode.responseLength}"
+                    "readLength=${profile.routeReadLength}"
             )
             report.appendLine(
                 "route SET encoding: bmRequestType=0x40 wValue=((output+1)<<8)|source; " +
@@ -159,7 +159,8 @@ internal object UsbDiagnosticsCollector {
             "capture contract: outputs=${profile.outputCount} " +
                 "defaultPair=${profile.defaultCaptureChannelOffset + 1}-" +
                 "${profile.defaultCaptureChannelOffset + 2} " +
-                "MIX/REC sources=${profile.mixWithoutMicSources.joinToString { hex2(it) }}"
+                "MIX/REC sources with mic=${profile.mixWithMicSources.joinToString { hex2(it) }} " +
+                "without mic=${profile.mixWithoutMicSources.joinToString { hex2(it) }}"
         )
         report.appendLine(
             "duplex keepalive: required=${profile.requiresPlaybackTraffic} " +
@@ -289,7 +290,7 @@ internal object UsbDiagnosticsCollector {
             (0 until profile.outputCount).toList()
         }
         outputs.forEach { requestOutput ->
-            val response = ByteArray(profile.routeReadMode.responseLength)
+            val response = ByteArray(profile.routeReadLength)
             val transferred = connection.controlTransfer(
                 UsbConstants.USB_DIR_IN or UsbConstants.USB_TYPE_VENDOR,
                 PioneerMixerProfile.ROUTE_GET_REQUEST,

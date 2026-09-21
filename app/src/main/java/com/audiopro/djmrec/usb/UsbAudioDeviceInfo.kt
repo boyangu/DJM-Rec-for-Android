@@ -36,12 +36,25 @@ data class UsbAudioDeviceInfo(
     val audioManagerDeviceId: Int = -1,
     val hasPermission: Boolean = false,
     /** True if [vendorId] matches a known Pioneer/AlphaTheta USB vendor ID. */
-    val isPioneer: Boolean = false
+    val isPioneer: Boolean = false,
+    /**
+     * True when [channelCount]/[bitResolution]/[subframeSize] were *not* read from descriptors or
+     * a verified profile but assumed from the generic AlphaTheta vendor-class template (12 ch,
+     * 24-bit in 3-byte subslots). Recordings may be garbled until the profile is confirmed --
+     * the UI says so and asks for a descriptor export.
+     */
+    val formatGuessed: Boolean = false
 ) {
+    /**
+     * Rate to request when opening capture. The advertised/profile list wins (48 kHz preferred:
+     * every DJM supports it and it halves file size versus 96 kHz); a rate AAudio once
+     * negotiated is only a hint of last resort, since a stale value from a previous device could
+     * otherwise contradict a profile's mandatory rate and hard-fail the native open.
+     */
     val preferredSampleRate: Int
-        get() = negotiatedSampleRate.takeIf { it > 0 }
-            ?: supportedSampleRates.firstOrNull { it == 48_000 }
+        get() = supportedSampleRates.firstOrNull { it == 48_000 }
             ?: supportedSampleRates.firstOrNull { it > 0 }
+            ?: negotiatedSampleRate.takeIf { it > 0 }
             ?: 48_000
 
     /** Proprietary routing profile, or null for generic USB Audio devices. */
@@ -50,6 +63,7 @@ data class UsbAudioDeviceInfo(
 
     val allInOneProfile: AllInOneProfile? get() = AllInOneProfile.find(vendorId, productId)
     val profileDescription: String get() = when {
+        formatGuessed -> "Unverified AlphaTheta profile · export USB descriptors"
         pioneerMixerProfile?.isHardwareConfirmed == true -> "Hardware confirmed"
         pioneerMixerProfile != null -> "Driver profile · validation pending"
         allInOneProfile != null -> "${allInOneProfile!!.displayName} · USB descriptor profile"
@@ -82,7 +96,9 @@ data class AudioStreamingInterfaceInfo(
     val isochronousInMaxPacketSize: Int? = null,
     val isochronousFeedbackEndpointAddress: Int? = null,
     val isochronousFeedbackMaxPacketSize: Int? = null,
-    val sampleRates: List<Int> = emptyList()
+    val sampleRates: List<Int> = emptyList(),
+    /** bInterfaceClass of the owning interface (1 = audio, 255 = vendor specific); -1 if unknown. */
+    val interfaceClass: Int = -1
 )
 
 /**

@@ -34,7 +34,7 @@ object LogExporter {
     private const val TAG = "LogExporter"
     private const val PREFS_NAME = "settings"
     private const val KEY_USB_CHANNEL_OFFSET = "usb_channel_offset"
-    private const val KEY_FORCE_ANDROID_CAPTURE = "force_android_capture"
+    private const val KEY_INCLUDE_MIC = "include_mic_in_mix"
 
     /** Runs on whatever thread it's called from — callers should invoke off the main thread. */
     fun collectDiagnosticReport(context: Context): String {
@@ -73,7 +73,7 @@ object LogExporter {
         sb.appendLine("=== Recording safety ===")
         sb.appendLine("active session journal: ${RecordingSessionStore.describe(context)}")
         sb.appendLine(
-            if (freeBytes == Long.MAX_VALUE) "free storage: unavailable"
+            if (freeBytes < 0) "free storage: unavailable (StatFs failed)"
             else "free storage: $freeBytes bytes (${String.format(Locale.US, "%.2f", freeBytes / 1_073_741_824.0)} GiB)"
         )
         sb.appendLine()
@@ -169,17 +169,13 @@ object LogExporter {
     private fun appendUsbCaptureSettingsSection(context: Context, sb: StringBuilder) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val offset = prefs.getInt(KEY_USB_CHANNEL_OFFSET, -1)
-        val forceAndroidCapture = prefs.getBoolean(KEY_FORCE_ANDROID_CAPTURE, false)
         sb.appendLine("=== USB capture settings ===")
-        sb.appendLine(
-            "capture path: " + when {
-                forceAndroidCapture -> "Android audio stack"
-                else -> "Raw libusb isochronous"
-            }
-        )
+        sb.appendLine("capture path: Raw libusb isochronous (AAudio only for plain stereo class devices)")
         sb.appendLine(
             "stereo pair: " + if (offset < 0) "Auto" else "USB channels ${offset + 1}-${offset + 2}"
         )
+        sb.appendLine("MIX route includes mic: ${prefs.getBoolean(KEY_INCLUDE_MIC, true)}")
+        sb.appendLine("software gain dB: ${prefs.getInt("recording_gain_db", 0)}")
         sb.appendLine()
     }
 

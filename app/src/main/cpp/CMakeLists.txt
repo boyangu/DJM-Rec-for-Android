@@ -71,12 +71,19 @@ FetchContent_MakeAvailable(flac)
 # libudev (Android has neither udev nor a matching shared lib), which is fine
 # here since Android's UsbManager -- not libusb -- is what detects attach.
 # ---------------------------------------------------------------------------
+# Pinned to a release tag (like Oboe/FLAC above) so a clean build is reproducible and an
+# upstream libusb change cannot silently alter the isochronous capture path. Requires
+# libusb_wrap_sys_device() and libusb_init_context() (both present since 1.0.27).
+# SOURCE_SUBDIR points at a directory without a CMakeLists.txt so FetchContent_MakeAvailable
+# only downloads the tree and never tries to add_subdirectory() libusb's (autotools) build.
 FetchContent_Declare(
     libusb_src
     GIT_REPOSITORY https://github.com/libusb/libusb.git
-    GIT_TAG        master
+    GIT_TAG        v1.0.29
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  android/jni
 )
-FetchContent_Populate(libusb_src)
+FetchContent_MakeAvailable(libusb_src)
 
 set(LIBUSB_DIR "${libusb_src_SOURCE_DIR}/libusb")
 set(LIBUSB_ANDROID_CONFIG_DIR "${libusb_src_SOURCE_DIR}/android")

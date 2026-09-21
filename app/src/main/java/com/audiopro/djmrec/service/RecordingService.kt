@@ -71,7 +71,6 @@ class RecordingService : LifecycleService() {
         const val ACTION_STOP_ALL = "com.audiopro.djmrec.action.STOP_ALL"
         const val ACTION_MARK_TRACK = "com.audiopro.djmrec.action.MARK_TRACK"
         const val ACTION_STOP = "com.audiopro.djmrec.action.STOP"
-        const val ACTION_DEVICE_DETACHED = "com.audiopro.djmrec.action.DEVICE_DETACHED"
         const val ACTION_START_LIVE = "com.audiopro.djmrec.action.START_LIVE"
         const val ACTION_STOP_LIVE = "com.audiopro.djmrec.action.STOP_LIVE"
 
@@ -105,6 +104,8 @@ class RecordingService : LifecycleService() {
         const val EXTRA_USB_TOTAL_CHANNELS = "extra_usb_total_channels"
         const val EXTRA_USB_SUBFRAME_SIZE = "extra_usb_subframe_size"
         const val EXTRA_USB_CHANNEL_OFFSET = "extra_usb_channel_offset"
+        /** Route REC OUT with (true) or without (false) the mic bus on models offering both. */
+        const val EXTRA_USB_INCLUDE_MIC = "extra_usb_include_mic"
         const val EXTRA_USB_CLOCK_CONTROL_INTERFACE = "extra_usb_clock_control_interface"
         const val EXTRA_USB_CLOCK_SOURCE_ID = "extra_usb_clock_source_id"
         const val EXTRA_USB_CLOCK_FREQUENCY_SETTABLE = "extra_usb_clock_frequency_settable"
@@ -184,6 +185,8 @@ class RecordingService : LifecycleService() {
     @Volatile private var uiVisible = false
     @Volatile private var waveformVisible = false
     private var lastCheckpointRealtime = 0L
+    /** Mic preference of the current USB session, needed if the route fallback fires later. */
+    @Volatile private var currentIncludeMic = true
     private var lastUsbStats = LongArray(7)
     private var usbHealthInitialized = false
     private var stalledUsbChecks = 0
@@ -191,10 +194,22 @@ class RecordingService : LifecycleService() {
     @Volatile
     private var safetyStopPending = false
 
+    /** True while a capture session exists in any form (arming, monitoring, recording, paused). */
+    private fun sessionAlive(): Boolean =
+        _state.value !is RecordingState.Idle && _state.value !is RecordingState.Error
+
+    /** True while audio is actually flowing (the states the health evaluator understands). */
+    private fun captureActive(): Boolean =
+        _state.value is RecordingState.Recording || _state.value is RecordingState.Paused ||
+            _state.value is RecordingState.Monitoring
+
     private val meterRunnable = object : Runnable {
         override fun run() {
-            if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused ||
-                _state.value is RecordingState.Monitoring) {
+            // Re-post for the whole session. Bailing out on a transient Preparing state used to
+            // stop metering, notification refresh and -- worst -- the health/safety supervision
+            // permanently until the next startPolling().
+            if (!sessionAlive()) return
+            if (captureActive()) {
                 val raw = AudioEngine.getLevels()
                 val clipping = AudioEngine.isClipping()
                 _levels.value = StereoLevels(
@@ -202,15 +217,14 @@ class RecordingService : LifecycleService() {
                     right = ChannelLevel(peakDb = raw[2], rmsDb = raw[3], isClipping = clipping)
                 )
                 _elapsedMillis.value = AudioEngine.getElapsedMillis()
-                monitorHandler.postDelayed(this, if (uiVisible) METER_UPDATE_INTERVAL_MS else 1_000L)
             }
+            monitorHandler.postDelayed(this, if (uiVisible) METER_UPDATE_INTERVAL_MS else 1_000L)
         }
     }
 
     private val waveformRunnable = object : Runnable {
         override fun run() {
-            if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused ||
-                _state.value is RecordingState.Monitoring) {
+            if (captureActive()) {
                 if (waveformEnabled && uiVisible && waveformVisible) {
                     _waveformBins.value = AudioEngine.getWaveformBins()
                     monitorHandler.postDelayed(this, WAVEFORM_UPDATE_INTERVAL_MS)
@@ -221,24 +235,31 @@ class RecordingService : LifecycleService() {
 
     private val notificationRunnable = object : Runnable {
         override fun run() {
-            if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused ||
-                _state.value is RecordingState.Monitoring) {
-                updateNotification()
-                monitorHandler.postDelayed(this, NOTIFICATION_UPDATE_INTERVAL_MS)
-            }
+            if (!sessionAlive()) return
+            if (captureActive()) updateNotification()
+            monitorHandler.postDelayed(this, NOTIFICATION_UPDATE_INTERVAL_MS)
         }
     }
 
     private val healthRunnable = object : Runnable {
         override fun run() {
-            val active = _state.value is RecordingState.Recording ||
-                _state.value is RecordingState.Paused || _state.value is RecordingState.Monitoring
-            if (!active) return
+            if (!sessionAlive()) return
+            // Renews the wake lock's safety timeout every tick; see acquireWakeLock().
             acquireWakeLock()
+            if (!captureActive()) {
+                monitorHandler.postDelayed(this, HEALTH_UPDATE_INTERVAL_MS)
+                return
+            }
+
+            // Native asked for the "route every MIX pair" fallback after a silent first window.
+            // It must run here (Java UsbDeviceConnection path), never on the libusb event thread.
+            if (isUsbIsoSession && AudioEngine.takeRouteFallbackRequest()) {
+                (application as DjmRecApplication).usbAudioManager.applyRouteFallback(currentIncludeMic)
+            }
 
             val recording = _state.value is RecordingState.Recording || _state.value is RecordingState.Paused
             val freeBytes = RecordingOutputManager.freeBytes()
-            val remaining = if (freeBytes == Long.MAX_VALUE) Long.MAX_VALUE
+            val remaining = if (freeBytes < 0) Long.MAX_VALUE
             else RecordingStoragePolicy.remainingSeconds(freeBytes, bytesPerSecond)
             val stats = AudioEngine.getUsbIsoTransferStats()
             val packetDelta = if (usbHealthInitialized) stats.getOrElse(0) { 0 } - lastUsbStats.getOrElse(0) { 0 } else 1
@@ -286,6 +307,8 @@ class RecordingService : LifecycleService() {
         }
     }
 
+    private val WAKE_LOCK_TIMEOUT_MS = TimeUnit.HOURS.toMillis(6)
+
     private val events get() = (application as DjmRecApplication).sessionEvents
     private val _saving = MutableStateFlow(false)
     val saving: StateFlow<Boolean> = _saving.asStateFlow()
@@ -300,7 +323,7 @@ class RecordingService : LifecycleService() {
                     com.audiopro.djmrec.diagnostics.RemoteDiagnostics.issue("Recording failure", state.toString())
             }
         }
-        setRecordingGainDb(getSharedPreferences("settings", Context.MODE_PRIVATE).getInt("recording_gain_db", 12))
+        setRecordingGainDb(getSharedPreferences("settings", Context.MODE_PRIVATE).getInt("recording_gain_db", 0))
         createNotificationChannel()
         lifecycleScope.launch {
             var previous: String? = null
@@ -372,11 +395,17 @@ class RecordingService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         if (intent?.hasExtra(EXTRA_RECORDING_GAIN_DB) == true) {
-            setRecordingGainDb(intent.getIntExtra(EXTRA_RECORDING_GAIN_DB, 12))
+            setRecordingGainDb(intent.getIntExtra(EXTRA_RECORDING_GAIN_DB, 0))
         }
-        if (_saving.value && intent?.action != ACTION_STOP_ALL && intent?.action != ACTION_DEVICE_DETACHED) return START_NOT_STICKY
+        if (_saving.value && intent?.action != ACTION_STOP_ALL) {
+            discardUnusedIsoHandle(intent)
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_START || intent?.action == ACTION_MONITOR) {
-            if (events.closeRequested.value) return START_NOT_STICKY
+            if (events.closeRequested.value) {
+                discardUnusedIsoHandle(intent)
+                return START_NOT_STICKY
+            }
             if (_state.value is RecordingState.Idle || _state.value is RecordingState.Error) {
                 isUsbIsoSession = intent.getIntExtra(EXTRA_CAPTURE_MODE, CAPTURE_MODE_AAUDIO) == CAPTURE_MODE_USB_ISO
             }
@@ -396,6 +425,7 @@ class RecordingService : LifecycleService() {
                     _state.value is RecordingState.Recording ||
                     _state.value is RecordingState.Paused ||
                     _state.value is RecordingState.Preparing) {
+                    discardUnusedIsoHandle(intent)
                     return START_NOT_STICKY
                 }
                 pendingRecordingFormat = null
@@ -429,6 +459,7 @@ class RecordingService : LifecycleService() {
                         bitDepth = bitDepth,
                         channelOffset = intent.getIntExtra(EXTRA_USB_CHANNEL_OFFSET, 0),
                         sampleRateHint = sampleRate,
+                        includeMic = intent.getBooleanExtra(EXTRA_USB_INCLUDE_MIC, true),
                         monitorOnly = true
                     )
                 } else {
@@ -449,10 +480,12 @@ class RecordingService : LifecycleService() {
                 // second UsbDeviceConnection here would invalidate the first raw USB stream.
                 if (_state.value is RecordingState.Preparing) {
                     pendingRecordingFormat = recordingFormatFrom(intent)
+                    discardUnusedIsoHandle(intent)
                     return START_NOT_STICKY
                 }
                 if (_state.value is RecordingState.Recording ||
                     _state.value is RecordingState.Paused) {
+                    discardUnusedIsoHandle(intent)
                     return START_NOT_STICKY
                 }
                 _state.value = RecordingState.Preparing
@@ -487,6 +520,7 @@ class RecordingService : LifecycleService() {
                         bitDepth = bitDepth,
                         channelOffset = intent.getIntExtra(EXTRA_USB_CHANNEL_OFFSET, 0),
                         sampleRateHint = sampleRate,
+                        includeMic = intent.getBooleanExtra(EXTRA_USB_INCLUDE_MIC, true),
                         format = format,
                         monitorOnly = false
                     )
@@ -500,7 +534,6 @@ class RecordingService : LifecycleService() {
             ACTION_PAUSE -> pauseSession()
             ACTION_RESUME -> resumeSession()
             ACTION_STOP -> stopSession()
-            ACTION_DEVICE_DETACHED -> handleDeviceDetached()
             ACTION_START_LIVE -> startLiveStream(intent)
             ACTION_STOP_LIVE -> stopLiveStream()
         }
@@ -508,6 +541,17 @@ class RecordingService : LifecycleService() {
         // silently resume capturing without the user re-confirming — safer default for a
         // professional recording tool than risking a corrupt/incomplete file being extended.
         return START_NOT_STICKY
+    }
+
+    /**
+     * An Intent that arrived with a freshly opened USB connection but is being dropped (service
+     * busy, saving, closing) must release that connection, otherwise it leaks and the next
+     * interface claim fails with BUSY. Only safe while no native session holds the fd.
+     */
+    private fun discardUnusedIsoHandle(intent: Intent?) {
+        if (intent?.hasExtra(EXTRA_USB_FD) == true && !AudioEngine.isStreamOpen()) {
+            (application as DjmRecApplication).usbAudioManager.releaseIsoCaptureConnection()
+        }
     }
 
     private fun recordingFormatFrom(intent: Intent): RecordingFormat {
@@ -618,12 +662,14 @@ class RecordingService : LifecycleService() {
         bitDepth: Int,
         channelOffset: Int,
         sampleRateHint: Int,
+        includeMic: Boolean = true,
         format: RecordingFormat = RecordingFormat.WAV,
         monitorOnly: Boolean = false
     ) {
         if (_state.value is RecordingState.Recording || _state.value is RecordingState.Monitoring) return
         _state.value = RecordingState.Preparing
         isUsbIsoSession = true
+        currentIncludeMic = includeMic
         isMonitoringOnly = monitorOnly
         currentBitDepth = bitDepth
         currentOutputChannels = 2
@@ -638,7 +684,7 @@ class RecordingService : LifecycleService() {
             totalChannels, subframeSize, bitDepth, channelOffset,
             clockControlInterfaceNumber, clockSourceId, clockSupportsFrequencySet,
             feedbackEndpointAddress, feedbackMaxPacketSize, vendorId, productId,
-            rawDescriptors, sampleRateHint
+            rawDescriptors, sampleRateHint, includeMic
         )
         if (negotiatedRate <= 0) {
             com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health(
@@ -697,7 +743,8 @@ class RecordingService : LifecycleService() {
     private fun beginEncodingOrFail(bitDepth: Int, format: RecordingFormat) {
         val freeBytes = RecordingOutputManager.freeBytes()
         val requiredBytes = RecordingStoragePolicy.requiredStartBytes(bytesPerSecond)
-        if (freeBytes != Long.MAX_VALUE && freeBytes < requiredBytes) {
+        if (freeBytes < 0) Log.w(TAG, "Free storage could not be measured; recording without a low-space guard")
+        if (freeBytes >= 0 && freeBytes < requiredBytes) {
             failEncoding("Not enough free storage. At least 256 MB is required.")
             return
         }
@@ -746,8 +793,13 @@ class RecordingService : LifecycleService() {
 
         acquireWakeLock()
         if (!startForegroundNotification()) {
+            AudioEngine.stopRecording()
             AudioEngine.close()
             releaseIsoConnectionIfNeeded()
+            RecordingOutputManager.abandon(this, output)
+            RecordingSessionStore.complete(this)
+            currentOutput = null
+            currentSessionId = null
             failPreparation("Android blocked the recording service -- open the app and try again")
             stopSelf()
             return
@@ -1064,14 +1116,15 @@ class RecordingService : LifecycleService() {
     // --- WakeLock -----------------------------------------------------------------------
 
     private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
+        val lock = wakeLock ?: powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK, "djmrec:recording"
-        ).apply {
-            setReferenceCounted(false)
-            acquire(TimeUnit.HOURS.toMillis(6)) // safety timeout; renewed implicitly by continued use
-        }
+        ).apply { setReferenceCounted(false) }.also { wakeLock = it }
+        // Non-reference-counted: calling acquire(timeout) on an already-held lock simply pushes
+        // the safety timeout out again. healthRunnable calls this every tick for the life of the
+        // session, so a 6 h ceiling can never expire underneath a long set as long as the
+        // service is alive; if the process dies the lock dies with it.
+        lock.acquire(WAKE_LOCK_TIMEOUT_MS)
     }
 
     private fun releaseWakeLock() {
