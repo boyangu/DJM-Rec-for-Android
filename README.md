@@ -41,6 +41,13 @@ analog output.
    offer both (A9, V5). Make a short test recording first.
 5. In **Settings > Background recording**, allow unrestricted battery use once so a long set is not
    throttled with the screen off.
+   If the mixer is not recognised (for example a DJM-V5 with a product ID the app does not know
+   yet), open **Recording setup > Mixer profile** and force the closest profile, or choose
+   **Class-compliant only** to send no vendor commands. **Advanced USB format** lets you pick the
+   wire channel count, sample container, capture endpoint, and toggle the silent playback
+   keepalive and endpoint sample-rate command. Settings are stored per mixer and applied
+   immediately; **Reset to auto** returns to detection. Check the meters and make a short test
+   recording after any change.
 6. Press **Record**, then **Save set** when finished. Find your files in **Sets** and `Music/DJMRec`.
    WAV is the safer choice for long sets: its header is checkpointed every few seconds and can be
    repaired after a crash; FLAC recovery is still limited.

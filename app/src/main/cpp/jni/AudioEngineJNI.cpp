@@ -42,7 +42,8 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
     jint clockControlInterfaceNumber, jint clockSourceId, jboolean clockSupportsFrequencySet,
     jint feedbackEndpointAddress, jint feedbackMaxPacketSize, jint vendorId, jint productId,
     jbyteArray rawDescriptors,
-    jint sampleRateHint, jboolean includeMicInMix) {
+    jint sampleRateHint, jboolean includeMicInMix,
+    jint playbackOverride, jint endpointRateOverride, jboolean allowFormatMismatch) {
     djmrec::UsbIsoAudioSource::Config config;
     config.fd = fd;
     config.interfaceNumber = interfaceNumber;
@@ -62,6 +63,9 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
     config.vendorId = vendorId;
     config.productId = productId;
     config.includeMicInMix = includeMicInMix == JNI_TRUE;
+    config.playbackOverride = playbackOverride;
+    config.endpointRateOverride = endpointRateOverride;
+    config.allowFormatMismatch = allowFormatMismatch == JNI_TRUE;
     if (rawDescriptors) {
         const jsize length = env->GetArrayLength(rawDescriptors);
         const auto* bytes = env->GetByteArrayElements(rawDescriptors, nullptr);

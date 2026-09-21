@@ -53,6 +53,10 @@ object AudioEngine {
      *   the device the way AAudio does.
      * @param includeMicInMix route REC OUT *with* the mic bus (vendor source 0x0a) instead of
      *   "REC OUT without mic" (0x0e) on Pioneer models that offer both.
+     * @param playbackOverride -1 follow the profile, 0 force the silent OUT keepalive off, 1 on.
+     * @param endpointRateOverride -1 follow the profile, 0/1 force the UAC1 SET_CUR rate command.
+     * @param allowFormatMismatch true when the wire format was entered manually (profile table
+     *   mismatches are logged, not fatal).
      * @return `sampleRateHint` on success, or -1 on failure.
      */
     external fun openUsbIso(
@@ -74,7 +78,10 @@ object AudioEngine {
         productId: Int,
         rawDescriptors: ByteArray,
         sampleRateHint: Int,
-        includeMicInMix: Boolean
+        includeMicInMix: Boolean,
+        playbackOverride: Int,
+        endpointRateOverride: Int,
+        allowFormatMismatch: Boolean
     ): Int
 
     /**

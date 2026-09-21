@@ -106,6 +106,10 @@ class RecordingService : LifecycleService() {
         const val EXTRA_USB_CHANNEL_OFFSET = "extra_usb_channel_offset"
         /** Route REC OUT with (true) or without (false) the mic bus on models offering both. */
         const val EXTRA_USB_INCLUDE_MIC = "extra_usb_include_mic"
+        /** Manual overrides: -1 follow profile, 0 off, 1 on; see CaptureOverride. */
+        const val EXTRA_USB_PLAYBACK_OVERRIDE = "extra_usb_playback_override"
+        const val EXTRA_USB_ENDPOINT_RATE_OVERRIDE = "extra_usb_endpoint_rate_override"
+        const val EXTRA_USB_ALLOW_FORMAT_MISMATCH = "extra_usb_allow_format_mismatch"
         const val EXTRA_USB_CLOCK_CONTROL_INTERFACE = "extra_usb_clock_control_interface"
         const val EXTRA_USB_CLOCK_SOURCE_ID = "extra_usb_clock_source_id"
         const val EXTRA_USB_CLOCK_FREQUENCY_SETTABLE = "extra_usb_clock_frequency_settable"
@@ -460,6 +464,9 @@ class RecordingService : LifecycleService() {
                         channelOffset = intent.getIntExtra(EXTRA_USB_CHANNEL_OFFSET, 0),
                         sampleRateHint = sampleRate,
                         includeMic = intent.getBooleanExtra(EXTRA_USB_INCLUDE_MIC, true),
+                        playbackOverride = intent.getIntExtra(EXTRA_USB_PLAYBACK_OVERRIDE, -1),
+                        endpointRateOverride = intent.getIntExtra(EXTRA_USB_ENDPOINT_RATE_OVERRIDE, -1),
+                        allowFormatMismatch = intent.getBooleanExtra(EXTRA_USB_ALLOW_FORMAT_MISMATCH, false),
                         monitorOnly = true
                     )
                 } else {
@@ -521,6 +528,9 @@ class RecordingService : LifecycleService() {
                         channelOffset = intent.getIntExtra(EXTRA_USB_CHANNEL_OFFSET, 0),
                         sampleRateHint = sampleRate,
                         includeMic = intent.getBooleanExtra(EXTRA_USB_INCLUDE_MIC, true),
+                        playbackOverride = intent.getIntExtra(EXTRA_USB_PLAYBACK_OVERRIDE, -1),
+                        endpointRateOverride = intent.getIntExtra(EXTRA_USB_ENDPOINT_RATE_OVERRIDE, -1),
+                        allowFormatMismatch = intent.getBooleanExtra(EXTRA_USB_ALLOW_FORMAT_MISMATCH, false),
                         format = format,
                         monitorOnly = false
                     )
@@ -663,6 +673,9 @@ class RecordingService : LifecycleService() {
         channelOffset: Int,
         sampleRateHint: Int,
         includeMic: Boolean = true,
+        playbackOverride: Int = -1,
+        endpointRateOverride: Int = -1,
+        allowFormatMismatch: Boolean = false,
         format: RecordingFormat = RecordingFormat.WAV,
         monitorOnly: Boolean = false
     ) {
@@ -684,7 +697,8 @@ class RecordingService : LifecycleService() {
             totalChannels, subframeSize, bitDepth, channelOffset,
             clockControlInterfaceNumber, clockSourceId, clockSupportsFrequencySet,
             feedbackEndpointAddress, feedbackMaxPacketSize, vendorId, productId,
-            rawDescriptors, sampleRateHint, includeMic
+            rawDescriptors, sampleRateHint, includeMic,
+            playbackOverride, endpointRateOverride, allowFormatMismatch
         )
         if (negotiatedRate <= 0) {
             com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health(

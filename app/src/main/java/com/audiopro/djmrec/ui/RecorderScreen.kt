@@ -266,6 +266,9 @@ internal fun RecordingSetupControls(viewModel: MainViewModel) {
             Switch(includeMic, viewModel::setIncludeMicInMix, enabled = enabled)
         }
     }
+    if (device != null) {
+        MixerOverrideControls(device!!, viewModel, enabled)
+    }
     if (device?.requiresIsoCapture == true) {
         Text("Stereo input pair", style = MaterialTheme.typography.titleSmall)
         ChannelPairSelector(pair, device!!.channelCount / 2, enabled, viewModel::setUsbChannelOffset)

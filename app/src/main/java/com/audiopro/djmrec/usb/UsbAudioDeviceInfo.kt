@@ -43,7 +43,9 @@ data class UsbAudioDeviceInfo(
      * 24-bit in 3-byte subslots). Recordings may be garbled until the profile is confirmed --
      * the UI says so and asks for a descriptor export.
      */
-    val formatGuessed: Boolean = false
+    val formatGuessed: Boolean = false,
+    /** Runtime overrides that were in force when this snapshot was published. */
+    val captureOverride: CaptureOverride = CaptureOverride()
 ) {
     /**
      * Rate to request when opening capture. The advertised/profile list wins (48 kHz preferred:
@@ -57,12 +59,30 @@ data class UsbAudioDeviceInfo(
             ?: negotiatedSampleRate.takeIf { it > 0 }
             ?: 48_000
 
-    /** Proprietary routing profile, or null for generic USB Audio devices. */
+    /** Proprietary routing profile (honouring a manual override), or null for generic USB Audio devices. */
     val pioneerMixerProfile: PioneerMixerProfile?
+        get() = captureOverride.resolveProfile(vendorId, productId)
+
+    /** Profile detected purely from the USB IDs, ignoring overrides. */
+    val detectedMixerProfile: PioneerMixerProfile?
         get() = PioneerMixerProfile.find(vendorId, productId)
+
+    /**
+     * USB IDs handed to native code so its profile table agrees with [pioneerMixerProfile]: a
+     * forced profile is represented by that profile's first product ID, "class-compliant only"
+     * by a vendor ID the native table cannot match.
+     */
+    val nativeVendorId: Int get() = if (captureOverride.profile == CaptureOverride.PROFILE_NONE) -1 else vendorId
+    val nativeProductId: Int
+        get() = captureOverride.forcedProfile?.productIds?.minOrNull() ?: productId
 
     val allInOneProfile: AllInOneProfile? get() = AllInOneProfile.find(vendorId, productId)
     val profileDescription: String get() = when {
+        captureOverride.profile == CaptureOverride.PROFILE_NONE -> "Manual: class-compliant only (no vendor routing)"
+        captureOverride.forcedProfile != null && captureOverride.hasFormat ->
+            "Manual: ${captureOverride.forcedProfile!!.displayName} profile + custom USB format"
+        captureOverride.forcedProfile != null -> "Manual: ${captureOverride.forcedProfile!!.displayName} profile"
+        captureOverride.hasFormat || captureOverride.hasEndpoint -> "Manual USB format"
         formatGuessed -> "Unverified AlphaTheta profile · export USB descriptors"
         pioneerMixerProfile?.isHardwareConfirmed == true -> "Hardware confirmed"
         pioneerMixerProfile != null -> "Driver profile · validation pending"
@@ -124,5 +144,10 @@ data class UsbIsoCaptureHandle(
     val feedbackEndpointAddress: Int = -1,
     val feedbackMaxPacketSize: Int = -1,
     val vendorId: Int = -1,
-    val productId: Int = -1
+    val productId: Int = -1,
+    /** -1 follow profile, 0 force off, 1 force on (see [CaptureOverride]). */
+    val playbackOverride: Int = -1,
+    val endpointRateOverride: Int = -1,
+    /** True when the wire format was entered manually; native logs instead of rejecting mismatches. */
+    val allowFormatMismatch: Boolean = false
 )

@@ -69,6 +69,13 @@ public:
         // Route REC OUT *with* the mic bus (kernel source 0x0a) rather than "without mic" (0x0e)
         // on models that offer both. Ignored where only one variant exists.
         bool includeMicInMix = true;
+        // Field overrides (Recording setup > Mixer profile > Advanced). -1 = follow the profile,
+        // 0 = force off, 1 = force on.
+        int playbackOverride = -1;       // silent OUT keepalive traffic
+        int endpointRateOverride = -1;   // UAC1 SET_CUR sampling frequency on the capture endpoint
+        // True when the wire format was entered manually: a mismatch with the native profile
+        // table is then logged instead of rejecting the session.
+        bool allowFormatMismatch = false;
         std::vector<uint8_t> rawDescriptors;
     };
 
@@ -140,6 +147,8 @@ private:
     static void onTransferComplete(libusb_transfer* transfer);
     static void onPlaybackTransferComplete(libusb_transfer* transfer);
 
+    const char* profileName() const { return mMixerProfile ? mMixerProfile->name : "manual"; }
+
     static constexpr int kNumTransfers = 8;
     static constexpr int kPacketsPerTransfer = 16;
     // Whole-URB error statuses tolerated before the transport is declared dead.
@@ -165,6 +174,13 @@ private:
     int mPlaybackPacketsPerSecond = 0;
     int mPlaybackFrameBytes = 0;
     int mPlaybackMaxPacketSize = 0;
+    // Effective (profile + override) duplex/rate decisions, resolved once in start().
+    bool mPlaybackEnabled = false;
+    int mPlaybackInterface = -1;
+    int mPlaybackAlternateSetting = -1;
+    int mPlaybackOutChannels = 0;
+    int mPlaybackOutSubframeBytes = 0;
+    bool mUseEndpointSampleRate = false;
     // Guards mPlaybackFrameRemainder: the initial submit loop on the control thread can overlap
     // with the first completions arriving on the event thread.
     std::mutex mPlaybackMutex;

@@ -309,13 +309,18 @@ class UsbAudioManager(private val context: Context) {
         var clockSampleRates = emptyList<Int>()
         var mixerProfile: PioneerMixerProfile? = null
         var formatGuessed = false
+        // Runtime overrides (Recording setup > Mixer profile) let an unknown or mis-detected
+        // mixer be driven without a rebuild: forced profile, "class-compliant only", manual wire
+        // format / endpoint, duplex and rate-command switches.
+        val override = CaptureOverrideStore.load(context, device.vendorId, device.productId)
+        if (override.isActive) Log.i(TAG, "${device.deviceName}: capture override active: $override")
         val bestInterface = try {
             rawDescriptors = connection.rawDescriptors ?: ByteArray(0)
             com.audiopro.djmrec.diagnostics.RemoteDiagnostics.descriptors(device.vendorId, device.productId, rawDescriptors, device.deviceName)
             Log.i(TAG, "${device.deviceName}: read ${rawDescriptors.size} bytes of raw descriptors")
             streamingInterfaces = UsbAudioDescriptorParser.findAudioStreamingInterfaces(rawDescriptors)
             topology = UsbAudioDescriptorParser.parseTopology(rawDescriptors)
-            mixerProfile = PioneerMixerProfile.find(device.vendorId, device.productId)
+            mixerProfile = override.resolveProfile(device.vendorId, device.productId)
             clockSampleRates = if (mixerProfile != null) {
                 Log.i(TAG, "${device.deviceName}: using ${mixerProfile.displayName} endpoint/vendor clock profile")
                 emptyList()
@@ -391,7 +396,7 @@ class UsbAudioManager(private val context: Context) {
             // largest isochronous IN endpoint on a non-zero alt setting, assume the shared DJM
             // template and say so loudly in the UI -- the pair picker, cadence-based rate
             // detection and the descriptor export make this diagnosable rather than a dead end.
-            vendorOverride ?: run {
+            val genericFallback = vendorOverride ?: run {
                 if (device.vendorId != PioneerMixerProfile.ALPHATHETA_VENDOR_ID || streamingInterfaces.isNotEmpty()) return@run null
                 val candidate = UsbAudioDescriptorParser.findAnyIsoInEndpoints(rawDescriptors)
                     .filter { it.alternateSetting > 0 && (it.isochronousInMaxPacketSize ?: 0) > 0 }
@@ -412,6 +417,25 @@ class UsbAudioManager(private val context: Context) {
                     subframeSize = GENERIC_ALPHATHETA_SUBFRAME
                 )
             }
+            // Manual endpoint / wire format always has the last word.
+            if (override.hasFormat || override.hasEndpoint) {
+                val manual = override.applyTo(
+                    genericFallback, UsbAudioDescriptorParser.findAnyIsoInEndpoints(rawDescriptors))
+                if (manual == null) {
+                    Log.w(TAG, "${device.deviceName}: manual override names no usable endpoint; using detection result")
+                } else {
+                    formatGuessed = false
+                    Log.i(
+                        TAG,
+                        "${device.deviceName}: manual USB format if${manual.interfaceNumber}/alt${manual.alternateSetting} " +
+                            "ep=0x${manual.isochronousInEndpointAddress?.toString(16)} ${manual.channelCount}ch/" +
+                            "${manual.bitResolution}bit/subframe${manual.subframeSize}"
+                    )
+                }
+                manual ?: genericFallback
+            } else {
+                genericFallback
+            }
         } finally {
             // We only needed the descriptors; AAudio/AudioFlinger owns the real data connection.
             connection.close()
@@ -422,7 +446,7 @@ class UsbAudioManager(private val context: Context) {
             Log.w(TAG, "${device.deviceName} exposes no usable isochronous IN audio streaming interface")
             _deviceState.value = null
             _connectionNotice.value = AllInOneProfile.find(device.vendorId, device.productId)?.takeIf { it == AllInOneProfile.XDJ_RX3 }?.setupHint
-                ?: "${device.productName ?: "This device"} exposes no supported PCM capture format. Try its PC/Mac audio mode. A vendor-specific format needs a verified driver profile."
+                ?: "${device.productName ?: "This device"} exposes no supported PCM capture format. Try its PC/Mac audio mode, or set a manual USB format under Recording setup > Mixer profile."
             return
         }
         Log.i(
@@ -450,7 +474,7 @@ class UsbAudioManager(private val context: Context) {
             subframeSize = bestInterface.subframeSize,
             supportedSampleRates = mixerProfile?.vendorCaptureSampleRates?.takeIf { it.isNotEmpty() }
                 ?: bestInterface.sampleRates.takeIf { it.isNotEmpty() }
-                ?: GENERIC_ALPHATHETA_RATES.takeIf { formatGuessed }
+                ?: GENERIC_ALPHATHETA_RATES.takeIf { formatGuessed || override.hasFormat || override.hasEndpoint }
                 ?: (clockSampleRates +
                     (routedDeviceId?.second ?: emptyList())).distinct(),
             audioManagerDeviceId = routedDeviceId?.first ?: -1,
@@ -458,10 +482,28 @@ class UsbAudioManager(private val context: Context) {
             isPioneer = isPioneerDevice(device),
             rawDescriptors = rawDescriptors,
             topology = topology,
-            formatGuessed = formatGuessed
+            formatGuessed = formatGuessed,
+            captureOverride = override
         )
         _connectionNotice.value = null
         refreshInputs()
+    }
+
+    /**
+     * Re-reads descriptors and republishes the current device, e.g. after the user changed a
+     * [CaptureOverride]. Callers must have stopped any running capture first (the fresh snapshot
+     * may select a different endpoint or format). Returns false when no device is published,
+     * it vanished, or permission is missing.
+     */
+    fun reinspectCurrentDevice(): Boolean {
+        val info = _deviceState.value ?: return false
+        val device = usbManager.deviceList.values.firstOrNull {
+            it.deviceName == info.deviceName && it.vendorId == info.vendorId && it.productId == info.productId
+        } ?: return false
+        if (!usbManager.hasPermission(device)) return false
+        Log.i(TAG, "${device.deviceName}: re-inspecting after capture override change")
+        inspectAndPublish(device)
+        return true
     }
 
     private fun queryClockSampleRates(
@@ -758,8 +800,11 @@ class UsbAudioManager(private val context: Context) {
                     ?.firstOrNull { it.interfaceNumber == interfaceNumber && it.alternateSetting == info.activeAlternateSetting }
                     ?.isochronousFeedbackMaxPacketSize ?: -1
             },
-            vendorId = info.vendorId,
-            productId = info.productId
+            vendorId = info.nativeVendorId,
+            productId = info.nativeProductId,
+            playbackOverride = info.captureOverride.playbackKeepalive,
+            endpointRateOverride = info.captureOverride.endpointRateCommand,
+            allowFormatMismatch = info.captureOverride.hasFormat || info.captureOverride.hasEndpoint
         )
     }
 

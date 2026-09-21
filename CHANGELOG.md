@@ -14,6 +14,11 @@
   different product ID) is captured with the shared 12-ch/24-bit template and clearly marked
   unverified instead of being refused. Any AlphaTheta device now launches the app on attach.
 - Add **Diagnostics > Copy USB descriptors** for finishing mixer profiles from real hardware.
+- Add a per-mixer **Mixer profile** override in Recording setup: force any built-in profile
+  (e.g. treat an unrecognised mixer as a DJM-V5 or DJM-A9), choose "class-compliant only" to
+  send no vendor commands, or hand-enter the USB wire format (channel count, sample container,
+  capture endpoint) and toggle the silent playback keepalive and endpoint sample-rate command.
+  Stored per mixer, applied by re-reading the device, no rebuild needed.
 - Native capture: never issue vendor control transfers from the libusb event thread (the
   "route all pairs" fallback is handed to the app's USB connection); inspect transfer status so an
   unplugged mixer or a dead endpoint ends the session within one health tick; raise the capture

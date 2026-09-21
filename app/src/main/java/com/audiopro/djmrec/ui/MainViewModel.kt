@@ -33,6 +33,8 @@ import com.audiopro.djmrec.streaming.YouTubeBroadcastState
 import com.audiopro.djmrec.streaming.YouTubeBroadcastStatus
 import com.audiopro.djmrec.streaming.YouTubeFinishResult
 import com.audiopro.djmrec.streaming.YouTubeLiveSession
+import com.audiopro.djmrec.usb.CaptureOverride
+import com.audiopro.djmrec.usb.CaptureOverrideStore
 import com.audiopro.djmrec.usb.UsbAudioDeviceInfo
 import com.audiopro.djmrec.usb.UsbAudioManager
 import kotlinx.coroutines.CancellationException
@@ -163,6 +165,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedSampleRate = MutableStateFlow(0)
     val selectedSampleRate: StateFlow<Int> = _selectedSampleRate.asStateFlow()
 
+    /** Runtime mixer profile / USB format overrides for the connected device. */
+    private val _captureOverride = MutableStateFlow(CaptureOverride())
+    val captureOverride: StateFlow<CaptureOverride> = _captureOverride.asStateFlow()
+
     private val _selectedFormat = MutableStateFlow(
         RecordingFormat.entries.firstOrNull { it.name == prefs.getString("recording_format", "WAV") } ?: RecordingFormat.WAV)
     val selectedFormat: StateFlow<RecordingFormat> = _selectedFormat.asStateFlow()
@@ -243,6 +249,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .takeIf { device.pioneerMixerProfile?.supportsCaptureLevel == true } ?: -1
                 _selectedSampleRate.value = prefs.getInt(sampleRateKey(device), 0)
                     .takeIf { it in device.supportedSampleRates } ?: 0
+                _captureOverride.value = device.captureOverride
                 delay(250L)
                 if (_recordingState.value is RecordingState.Idle ||
                     _recordingState.value is RecordingState.Error) {
@@ -342,8 +349,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _recordingState.value is RecordingState.Paused ||
             _recordingState.value is RecordingState.Preparing
 
-    /** Restarts a live monitor so a changed vendor setting (route, level, rate) takes effect. */
-    private fun restartMonitorIfRunning() {
+    /**
+     * Restarts a live monitor so a changed vendor setting (route, level, rate) takes effect.
+     * [betweenStopAndStart] runs once capture has fully stopped, e.g. to re-read descriptors.
+     */
+    private fun restartMonitorIfRunning(betweenStopAndStart: () -> Unit = {}) {
         if (_recordingState.value !is RecordingState.Monitoring) return
         val context = getApplication<Application>()
         _recordingState.value = RecordingState.Preparing
@@ -355,8 +365,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (stopped == null) {
                 _recordingState.value = RecordingState.Error("Could not apply the capture setting. Stop capture and reconnect the mixer.")
             } else {
-                _recordingState.value = stopped
-                startMonitoringDevice(context)
+                betweenStopAndStart()
+                _recordingState.value = if (deviceState.value == null) {
+                    RecordingState.Error("The mixer exposes no usable capture format with these settings. Adjust the mixer profile override or reset it.")
+                } else stopped
+                if (deviceState.value != null) startMonitoringDevice(context)
             }
         }
     }
@@ -379,6 +392,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _captureLevelStep.value = sanitized
         restartMonitorIfRunning()
     }
+
+    /**
+     * Persists a new [CaptureOverride] for the connected mixer, re-reads its descriptors with the
+     * override applied and restarts monitoring so the change is audible immediately.
+     */
+    fun updateCaptureOverride(transform: (CaptureOverride) -> CaptureOverride) {
+        if (captureSettingsLocked()) return
+        val device = deviceState.value ?: return
+        val updated = transform(_captureOverride.value)
+        if (updated == _captureOverride.value) return
+        CaptureOverrideStore.save(getApplication<Application>(), device.vendorId, device.productId, updated)
+        _captureOverride.value = updated
+        Log.i(TAG, "capture override for ${device.productName}: $updated")
+        if (_recordingState.value is RecordingState.Monitoring) {
+            restartMonitorIfRunning { usbAudioManager.reinspectCurrentDevice() }
+        } else {
+            usbAudioManager.reinspectCurrentDevice()
+            ensureLiveMonitoring()
+        }
+    }
+
+    fun resetCaptureOverride() = updateCaptureOverride { CaptureOverride() }
 
     fun setSampleRate(rate: Int) {
         if (captureSettingsLocked()) return

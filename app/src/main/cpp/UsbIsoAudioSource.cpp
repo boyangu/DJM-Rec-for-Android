@@ -56,8 +56,13 @@ struct IsoEndpointInfo {
     int address = -1;
     int maxPacketSize = 0;
     int interval = 1;
+    int interfaceNumber = -1;
+    int alternateSetting = -1;
 };
 
+// targetInterface < 0 scans every interface/alt setting (first isochronous OUT endpoint on a
+// non-zero alt setting wins) -- used when a manual override forces playback keepalive on a model
+// whose profile does not name the OUT interface.
 IsoEndpointInfo findIsoOutEndpoint(
     const std::vector<uint8_t>& descriptors,
     int targetInterface,
@@ -75,8 +80,10 @@ IsoEndpointInfo findIsoOutEndpoint(
             currentInterface = descriptors[offset + 2];
             currentAlternateSetting = descriptors[offset + 3];
         } else if (descriptorType == LIBUSB_DT_ENDPOINT && length >= 7 &&
-                   currentInterface == targetInterface &&
-                   currentAlternateSetting == targetAlternateSetting) {
+                   (targetInterface < 0
+                        ? currentAlternateSetting > 0
+                        : (currentInterface == targetInterface &&
+                           currentAlternateSetting == targetAlternateSetting))) {
             const int address = descriptors[offset + 2];
             const int attributes = descriptors[offset + 3];
             if ((targetAddress >= 0 ? address == targetAddress : (address & LIBUSB_ENDPOINT_IN) == 0) &&
@@ -86,7 +93,9 @@ IsoEndpointInfo findIsoOutEndpoint(
                 return {
                     address,
                     (rawMaxPacket & 0x07FF) * transactions,
-                    std::max(1, static_cast<int>(descriptors[offset + 6]))
+                    std::max(1, static_cast<int>(descriptors[offset + 6])),
+                    currentInterface,
+                    currentAlternateSetting
                 };
             }
         }
@@ -258,13 +267,50 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         (config.totalChannels != mMixerProfile->captureInChannels ||
          config.subframeSize != mMixerProfile->captureInSubframeBytes ||
          config.bitResolution != mMixerProfile->captureInBitResolution)) {
-        return std::string(mMixerProfile->name) +
-            " capture format mismatch between Kotlin and native profiles";
+        if (!config.allowFormatMismatch) {
+            return std::string(mMixerProfile->name) +
+                " capture format mismatch between Kotlin and native profiles";
+        }
+        LOGW("%s: manual wire format %dch/%dbit/subframe%d overrides profile table %dch/%dbit/subframe%d",
+             mMixerProfile->name, config.totalChannels, config.bitResolution, config.subframeSize,
+             mMixerProfile->captureInChannels, mMixerProfile->captureInBitResolution,
+             mMixerProfile->captureInSubframeBytes);
     }
     if (mMixerProfile && mMixerProfile->fixedCaptureInSampleRate > 0 &&
-        config.requestedSampleRate != mMixerProfile->fixedCaptureInSampleRate) {
+        config.requestedSampleRate != mMixerProfile->fixedCaptureInSampleRate &&
+        !config.allowFormatMismatch) {
         return std::string(mMixerProfile->name) + " requires " +
             std::to_string(mMixerProfile->fixedCaptureInSampleRate) + " Hz capture";
+    }
+
+    // Resolve profile + manual overrides once. Overrides exist so an unknown mixer (or a known
+    // one behaving differently) can be driven in the field without a rebuild.
+    mPlaybackEnabled = config.playbackOverride >= 0
+        ? config.playbackOverride == 1
+        : (mMixerProfile && mMixerProfile->requiresPlaybackTraffic);
+    mPlaybackInterface = mMixerProfile ? mMixerProfile->playbackInterface : -1;
+    mPlaybackAlternateSetting = mMixerProfile ? mMixerProfile->playbackAlternateSetting : -1;
+    mPlaybackOutChannels = mMixerProfile && mMixerProfile->playbackOutChannels > 0
+        ? mMixerProfile->playbackOutChannels : config.totalChannels;
+    mPlaybackOutSubframeBytes = mMixerProfile && mMixerProfile->playbackOutSubframeBytes > 0
+        ? mMixerProfile->playbackOutSubframeBytes : config.subframeSize;
+    if (mPlaybackEnabled && mPlaybackInterface < 0) {
+        const IsoEndpointInfo anyOut = findIsoOutEndpoint(config.rawDescriptors, -1, -1);
+        mPlaybackInterface = anyOut.interfaceNumber;
+        mPlaybackAlternateSetting = anyOut.alternateSetting;
+        if (anyOut.address < 0) {
+            LOGW("Playback keepalive forced on but no isochronous OUT endpoint exists; disabling");
+            mPlaybackEnabled = false;
+        }
+    }
+    mUseEndpointSampleRate = config.endpointRateOverride >= 0
+        ? config.endpointRateOverride == 1
+        : (mMixerProfile && mMixerProfile->usesEndpointSampleRate);
+    if (config.playbackOverride >= 0 || config.endpointRateOverride >= 0 || config.allowFormatMismatch) {
+        LOGI("Manual overrides: playback=%d endpoint_rate=%d format_mismatch_ok=%d -> keepalive %s (if%d/alt%d), rate command %s",
+             config.playbackOverride, config.endpointRateOverride, config.allowFormatMismatch ? 1 : 0,
+             mPlaybackEnabled ? "on" : "off", mPlaybackInterface, mPlaybackAlternateSetting,
+             mUseEndpointSampleRate ? "on" : "off");
     }
     if (config.fd < 0 || config.endpointAddress < 0 || config.maxPacketSize <= 0 ||
         config.totalChannels < 1 || config.subframeSize < 1 ||
@@ -355,8 +401,8 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     }
     configurePioneerRecordingRoute();
 
-    if (mMixerProfile && mMixerProfile->requiresPlaybackTraffic) {
-        rc = libusb_claim_interface(mHandle, mMixerProfile->playbackInterface);
+    if (mPlaybackEnabled && mPlaybackInterface >= 0) {
+        rc = libusb_claim_interface(mHandle, mPlaybackInterface);
         if (rc != LIBUSB_SUCCESS) {
             restorePioneerRecordingRoute();
             libusb_close(mHandle);
@@ -365,9 +411,8 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
             mContext = nullptr;
             return libusbErrorString("Pioneer playback interface claim", rc);
         }
-        mClaimedPlaybackInterface = mMixerProfile->playbackInterface;
-        rc = libusb_set_interface_alt_setting(
-            mHandle, mMixerProfile->playbackInterface, mMixerProfile->playbackAlternateSetting);
+        mClaimedPlaybackInterface = mPlaybackInterface;
+        rc = libusb_set_interface_alt_setting(mHandle, mPlaybackInterface, mPlaybackAlternateSetting);
         if (rc != LIBUSB_SUCCESS) {
             restorePioneerRecordingRoute();
             libusb_release_interface(mHandle, mClaimedPlaybackInterface);
@@ -378,8 +423,8 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
             mContext = nullptr;
             return libusbErrorString("Pioneer playback alt setting", rc);
         }
-        LOGI("%s duplex session activated playback interface %d alt %d", mMixerProfile->name,
-             mMixerProfile->playbackInterface, mMixerProfile->playbackAlternateSetting);
+        LOGI("%s duplex session activated playback interface %d alt %d", profileName(),
+             mPlaybackInterface, mPlaybackAlternateSetting);
     }
 
     if (config.clockControlInterfaceNumber >= 0 && config.clockSourceId >= 0) {
@@ -480,7 +525,8 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         }
     }
 
-    if (!mMixerProfile && hasEndpointFrequencyControl(config.rawDescriptors, config.interfaceNumber,
+    if (!mMixerProfile && config.endpointRateOverride < 0 &&
+        hasEndpointFrequencyControl(config.rawDescriptors, config.interfaceNumber,
             config.alternateSetting, config.endpointAddress)) {
         setPioneerCaptureSampleRate(mHandle, config.endpointAddress, config.requestedSampleRate, "USB Audio Class 1");
         const int endpointRate = readPioneerEndpointSampleRate(mHandle, config.endpointAddress, "USB Audio Class 1");
@@ -490,7 +536,7 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         }
     }
 
-    if (mMixerProfile && mMixerProfile->usesEndpointSampleRate) {
+    if (mUseEndpointSampleRate) {
         // A USBPcap capture of Pioneer's own driver actually recording real audio (2026-07-20,
         // whit_sound_on.pcapng) showed it never sends a GET_CUR probe here at all: right after
         // SET_INTERFACE it unconditionally sends SET_CUR sampling frequency (bmRequestType=0x22,
@@ -503,13 +549,13 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
         // SET on it could have been silently skipping the one command that arms real streaming.
         // Always SET now, unconditionally, matching the proven-working driver sequence.
         mEndpointRateSetResult = setPioneerCaptureSampleRate(
-            mHandle, config.endpointAddress, config.requestedSampleRate, mMixerProfile->name);
+            mHandle, config.endpointAddress, config.requestedSampleRate, profileName());
         const int endpointRate = readPioneerEndpointSampleRate(
-            mHandle, config.endpointAddress, mMixerProfile->name);
+            mHandle, config.endpointAddress, profileName());
         if (endpointRate > 0) {
             mOpenedSampleRate.store(endpointRate, std::memory_order_release);
             // Vendor endpoint GET may echo a requested rate; packet timing verifies the wire.
-            LOGI("%s capture endpoint reports active rate %d Hz", mMixerProfile->name, endpointRate);
+            LOGI("%s capture endpoint reports active rate %d Hz", profileName(), endpointRate);
         }
     }
 
@@ -548,13 +594,13 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     // Some UAC2 Pioneer models (notably DJM-S11) derive the capture clock from the active
     // playback stream but do not use the UAC1 endpoint-rate request above. Keep their OUT
     // traffic alive independently of the endpoint-rate initialization path.
-    if (mMixerProfile && mMixerProfile->requiresPlaybackTraffic && mPlaybackTransfers.empty() &&
+    if (mPlaybackEnabled && mPlaybackTransfers.empty() &&
         !startPioneerPlaybackSilence(mOpenedSampleRate.load(std::memory_order_acquire))) {
         if (mMixerProfile == &kDjm450Profile) {
             stop();
             return "DJM-450 playback keepalive could not be initialized";
         }
-        LOGW("%s could not start playback traffic; continuing capture-only", mMixerProfile->name);
+        LOGW("%s could not start playback traffic; continuing capture-only", profileName());
     }
     if (mMixerProfile && mMixerProfile->routeReadMode == PioneerRouteReadMode::None) {
         // Write-only models: there is no GET to base a "route everything" fallback on.
@@ -621,12 +667,12 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
 }
 
 bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
-    if (!mMixerProfile || !mMixerProfile->requiresPlaybackTraffic) return false;
+    if (!mPlaybackEnabled || mPlaybackInterface < 0) return false;
     const IsoEndpointInfo endpoint = findIsoOutEndpoint(
-        mConfig.rawDescriptors, mMixerProfile->playbackInterface,
-        mMixerProfile->playbackAlternateSetting);
-    if (endpoint.address < 0 || endpoint.maxPacketSize <= 0 || sampleRate <= 0) {
-        LOGW("%s playback OUT endpoint unavailable in raw descriptors", mMixerProfile->name);
+        mConfig.rawDescriptors, mPlaybackInterface, mPlaybackAlternateSetting);
+    if (endpoint.address < 0 || endpoint.maxPacketSize <= 0 || sampleRate <= 0 ||
+        mPlaybackOutChannels <= 0 || mPlaybackOutSubframeBytes <= 0) {
+        LOGW("%s playback OUT endpoint unavailable in raw descriptors", profileName());
         return false;
     }
 
@@ -634,8 +680,7 @@ bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
     const int basePacketsPerSecond = speed >= LIBUSB_SPEED_HIGH ? 8000 : 1000;
     const int intervalShift = std::clamp(endpoint.interval - 1, 0, 10);
     mPlaybackPacketsPerSecond = std::max(1, basePacketsPerSecond >> intervalShift);
-    mPlaybackFrameBytes =
-        mMixerProfile->playbackOutChannels * mMixerProfile->playbackOutSubframeBytes;
+    mPlaybackFrameBytes = mPlaybackOutChannels * mPlaybackOutSubframeBytes;
     mPlaybackMaxPacketSize = endpoint.maxPacketSize;
     {
         std::lock_guard<std::mutex> lock(mPlaybackMutex);
@@ -655,9 +700,9 @@ bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
     }
     mPioneerFallbackStage = 1;
     LOGI("%s fallback strategy 1: streaming silence to endpoint 0x%02x at %d Hz "
-         "(%dch packed 24-bit, %d packets/sec, maxPacket=%d)",
-         mMixerProfile->name, endpoint.address, sampleRate, mMixerProfile->playbackOutChannels,
-         mPlaybackPacketsPerSecond, mPlaybackMaxPacketSize);
+         "(%dch x %d bytes, %d packets/sec, maxPacket=%d)",
+         profileName(), endpoint.address, sampleRate, mPlaybackOutChannels,
+         mPlaybackOutSubframeBytes, mPlaybackPacketsPerSecond, mPlaybackMaxPacketSize);
     return true;
 }
 
@@ -884,8 +929,11 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
         << " settable:" << (mConfig.clockSupportsFrequencySet ? "true" : "false") << '\n'
         << "feedback=ep:" << mConfig.feedbackEndpointAddress
         << " max_packet:" << mConfig.feedbackMaxPacketSize << '\n'
-        << "playback_keepalive=required:"
-        << (mMixerProfile && mMixerProfile->requiresPlaybackTraffic ? "true" : "false")
+        << "playback_keepalive=required:" << (mPlaybackEnabled ? "true" : "false")
+        << " override:" << mConfig.playbackOverride
+        << " endpoint_rate_command:" << (mUseEndpointSampleRate ? "true" : "false")
+        << " override:" << mConfig.endpointRateOverride
+        << " manual_format:" << (mConfig.allowFormatMismatch ? "true" : "false")
         << " claimed_if:" << mClaimedPlaybackInterface
         << " transfers:" << mPlaybackTransfers.size() << '\n'
         << "route_fallback_stage=" << mPioneerFallbackStage.load(std::memory_order_relaxed) << '\n';
