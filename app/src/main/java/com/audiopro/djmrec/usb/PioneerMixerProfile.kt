@@ -100,12 +100,18 @@ enum class PioneerMixerProfile(
         vendorCaptureSampleRates = listOf(44_100, 48_000, 96_000),
         supportsCaptureLevel = true
     ),
-    // DJM-V5 (2026-01): product IDs are UNVERIFIED guesses; no public descriptor dump or kernel
-    // quirk exists yet. Wire format comes from the device's UAC descriptors when present,
-    // otherwise UsbAudioManager's generic AlphaTheta vendor-class fallback.
+    // DJM-V5 (2026-01). Product IDs 0x0058-0x005B CONFIRMED from AlphaTheta's own Mac Setting
+    // Utility 1.0.0 (DJM-V5Setup.framework checks vendor 0x2B73, product 0x58..0x5B). The same
+    // framework's strings list the per-pair USB input options -- Control Tone PHONO / LINE,
+    // Pre/Post CH fader, MIC, "MIX(REC OUT with MIC)", "MIX(REC OUT without MIC)" -- and a
+    // six-step boost level (+15..0 dB) identical to the A9/V10, so the A9 source codes (0x0a /
+    // 0x0e) and the capture-level register are assumed. No kernel quirk or descriptor dump yet:
+    // the wire format comes from the device's UAC descriptors when present, otherwise from
+    // UsbAudioManager's generic AlphaTheta vendor-class fallback or a manual override.
     DJM_V5(
         "DJM-V5", setOf(0x0058, 0x0059, 0x005A, 0x005B), 0, 4,
-        RouteReadMode.SINGLE_OUTPUT_ONE_BASED, List(4) { 0x0A }, List(4) { 0x0E }
+        RouteReadMode.SINGLE_OUTPUT_ONE_BASED, List(4) { 0x0A }, List(4) { 0x0E },
+        supportsCaptureLevel = true
     ),
     DJM_900NXS2(
         "DJM-900NXS2", setOf(0x000A), 0, 5, RouteReadMode.ALL_OUTPUTS,

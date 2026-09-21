@@ -14,7 +14,7 @@ Choose the **release APK** for everyday use. The debug APK is for testing.
 | **DJM-A9, DJM-750MK2** | Hardware confirmed |
 | DJM-900NXS2, DJM-450 | Implemented and reported working; the app still labels them experimental until re-verified |
 | DJM-V10 | Profile matches the Linux driver tables (12-ch 24-bit, USB 1/2 … 11/12 routable to REC OUT); hardware test pending |
-| DJM-V5 | Unverified: USB product IDs are guessed and no descriptor dump exists yet. Connect it, then use **Diagnostics > Copy USB descriptors** and share the output |
+| DJM-V5 | USB IDs (2b73:0058-005b), REC OUT with/without mic options and the six-step USB level confirmed from AlphaTheta's own Setting Utility; wire format still unverified. Connect it, then use **Diagnostics > Copy USB descriptors** and share the output |
 | DJM-S11 | Experimental mixer profile; hardware testing needed |
 | XDJ-XZ | Experimental USB capture; automatic master selection on USB 5/6 |
 | XDJ-AZ, OPUS-QUAD, OMNIS-DUO | Experimental USB capture; automatic master selection on USB 1/2 |

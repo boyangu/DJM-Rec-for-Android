@@ -19,6 +19,9 @@
   send no vendor commands, or hand-enter the USB wire format (channel count, sample container,
   capture endpoint) and toggle the silent playback keepalive and endpoint sample-rate command.
   Stored per mixer, applied by re-reading the device, no rebuild needed.
+- DJM-V5: product IDs 0x0058-0x005B, the REC OUT with/without mic options and the six-step USB
+  recording level are now confirmed against AlphaTheta's DJM-V5 Setting Utility 1.0.0; the
+  mixer USB level control is offered for the V5 as well.
 - Native capture: never issue vendor control transfers from the libusb event thread (the
   "route all pairs" fallback is handed to the app's USB connection); inspect transfer status so an
   unplugged mixer or a dead endpoint ends the session within one health tick; raise the capture

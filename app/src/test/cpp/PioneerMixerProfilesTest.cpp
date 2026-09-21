@@ -43,6 +43,7 @@ int main() {
     }
     assert(pioneerSupportsCaptureLevel(kDjmA9Profile));
     assert(pioneerSupportsCaptureLevel(kDjmV10Profile));
+    assert(pioneerSupportsCaptureLevel(kDjmV5Profile));
     assert(!pioneerSupportsCaptureLevel(kDjm900Nxs2Profile));
 
     // DJM-V5: unverified profile mirrors the A9 source codes on four pairs.

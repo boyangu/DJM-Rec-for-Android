@@ -79,10 +79,12 @@ constexpr PioneerMixerProfile kDjmV10Profile{
     12, 3, 12, 3, 24, 0
 };
 
-// DJM-V5 (released 2026-01): product IDs are UNVERIFIED guesses and there is no public
-// descriptor dump or kernel quirk yet. The wire format is read from the device's own UAC
-// descriptors when present; UsbAudioManager falls back to the generic AlphaTheta vendor-class
-// scan otherwise. Source codes mirror the A9 (with mic 0x0a / without 0x0e).
+// DJM-V5 (released 2026-01): product IDs 0x0058-0x005B confirmed from AlphaTheta's Mac Setting
+// Utility 1.0.0 (DJM-V5Setup.framework accepts 2b73:0058..005b). Its option strings list
+// "MIX(REC OUT with MIC)" / "MIX(REC OUT without MIC)" and a six-step boost level like the
+// A9/V10, so source codes mirror the A9 (with mic 0x0a / without 0x0e). No kernel quirk or
+// descriptor dump yet: the wire format is read from the device's own UAC descriptors when
+// present; UsbAudioManager falls back to the generic AlphaTheta vendor-class scan otherwise.
 constexpr PioneerMixerProfile kDjmV5Profile{
     "DJM-V5", 0x0058, 0x005B, 4, 0,
     {0x0A, 0x0A, 0x0A, 0x0A, -1, -1},
@@ -155,9 +157,11 @@ constexpr int pioneerMixRouteValue(const PioneerMixerProfile& profile, int chann
     return source < 0 ? -1 : ((output + 1) << 8) | source;
 }
 
-// True when the model's capture-level register uses the six-step +15..0 dB scale (A9, V10).
+// True when the model's capture-level register uses the six-step +15..0 dB scale (A9, V10,
+// and the V5 per its Setting Utility's BOOSTLEVEL0..5 strings).
 constexpr bool pioneerSupportsCaptureLevel(const PioneerMixerProfile& profile) {
-    return profile.productIdFirst == 0x003C || profile.productIdFirst == 0x0034;
+    return profile.productIdFirst == 0x003C || profile.productIdFirst == 0x0034 ||
+        profile.productIdFirst == 0x0058;
 }
 
 // Linux ALSA quirks-table.h and mixer_quirks.c: separate UAC2 interfaces,
