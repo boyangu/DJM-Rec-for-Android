@@ -108,3 +108,6 @@ app/src/main/cpp/third_party/lame/
 # IDE-specific
 # =============================================================================
 .vscode/
+
+# Fork release signing material (keystore + password), never committed.
+release-signing/

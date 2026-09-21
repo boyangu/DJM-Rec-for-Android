@@ -21,6 +21,10 @@ fun loadProperties(path: String): Properties = Properties().apply {
 val appVersion = loadProperties("version.properties")
 val keystoreFile = rootProject.file("keystore.properties")
 val keystore = if (keystoreFile.exists()) loadProperties("keystore.properties") else null
+// Firebase (Analytics + Crashlytics) is optional even for release builds: a fork or a private
+// production build without the upstream project's google-services.json still gets a fully
+// signed, minified APK -- with telemetry compiled out exactly like debug/local builds.
+val firebaseConfigured = project.file("google-services.json").exists()
 val streamingFile = rootProject.file("streaming.properties")
 val streaming = if (streamingFile.exists()) loadProperties("streaming.properties") else null
 val twitchClientId = providers.environmentVariable("TWITCH_CLIENT_ID").orNull
@@ -84,8 +88,10 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = releaseSigning
+            buildConfigField("boolean", "FIREBASE_CONFIGURED", firebaseConfigured.toString())
             configure<CrashlyticsExtension> {
-                nativeSymbolUploadEnabled = true
+                nativeSymbolUploadEnabled = firebaseConfigured
+                mappingFileUploadEnabled = firebaseConfigured
             }
         }
         debug {
@@ -146,10 +152,15 @@ android {
 
 // Firebase is production-only. Keep debug/local builds isolated from production reports and make
 // ordinary contributor builds work without the gitignored Firebase configuration file.
-tasks.matching { it.name in setOf("processDebugGoogleServices", "processLocalGoogleServices") }
-    .configureEach {
-        enabled = false
-    }
+tasks.matching {
+    it.name in setOf("processDebugGoogleServices", "processLocalGoogleServices") ||
+        (!firebaseConfigured && it.name == "processReleaseGoogleServices")
+}.configureEach {
+    enabled = false
+}
+if (!firebaseConfigured) {
+    logger.lifecycle("app/google-services.json not found: release builds compile with Firebase telemetry disabled.")
+}
 
 kotlin {
     compilerOptions {

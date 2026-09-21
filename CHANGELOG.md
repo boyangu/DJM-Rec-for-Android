@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.43.0 (2026-09-21)
 
 - Route the *selected* USB pair to MIX/REC OUT on models without a readable route register
   (DJM-V10, DJM-S11, DJM-450 unchanged): picking USB 5/6 on a V10 now records MIX on USB 5/6.
