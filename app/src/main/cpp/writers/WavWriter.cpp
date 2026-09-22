@@ -172,7 +172,9 @@ bool WavWriter::syncToDisk() {
 
 bool WavWriter::close() {
     if (!mFile) return true;
-    const bool headerOk = checkpoint();
+    // Finalizing is the one place the two halves still belong together: the header must be
+    // correct and on storage before the descriptor goes away.
+    const bool headerOk = flushRecoverable() && syncToDisk();
     const bool closeOk = fclose(mFile) == 0;
     const bool ok = headerOk && closeOk;
     mFile = nullptr;
