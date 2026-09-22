@@ -166,6 +166,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
     implementation("androidx.activity:activity-ktx:1.9.1")
     implementation("androidx.activity:activity-compose:1.9.1")
+    // Pinned explicitly, not because this Compose-only app uses fragments, but because Firebase
+    // Analytics drags in androidx.fragment 1.0.0 transitively. registerForActivityResult() is
+    // broken on fragment < 1.3.0, which lint flags as InvalidFragmentVersionForActivityResult.
+    // play-services-auth used to win this version conflict; removing it with Go Live exposed it.
+    implementation("androidx.fragment:fragment:1.8.3")
 
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)

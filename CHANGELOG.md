@@ -15,6 +15,9 @@
   "Buy me a coffee" drawer entry.
 - Point the in-app updater at this fork and rename the release APK to `Set-Recorder-v*.apk`.
   Previously it offered upstream's APK, which is signed with a different key and cannot install.
+- Pin `androidx.fragment` to 1.8.3. Firebase Analytics pulls in fragment 1.0.0 transitively, on
+  which `registerForActivityResult` is broken; play-services-auth used to win that version
+  conflict, so removing it with Go Live exposed the problem.
 
 ## v0.43.0 (2026-09-21)
 
