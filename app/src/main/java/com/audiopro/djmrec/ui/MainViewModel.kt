@@ -94,10 +94,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lastSaved = sessionEvents.lastSaved.asStateFlow()
     val markerCount = sessionEvents.markerCount.asStateFlow()
     val keepScreenOn = MutableStateFlow(prefs.getBoolean("keep_screen_on", false))
+    // On by default so that granting Do Not Disturb access is the only step left; without that
+    // grant the setting is inert, so defaulting it on cannot silence anyone's phone by surprise.
+    val doNotDisturbWhileRecording = MutableStateFlow(
+        prefs.getBoolean(RecordingService.KEY_DND_WHILE_RECORDING, true)
+    )
     val smoothWaveform = MutableStateFlow(prefs.getBoolean("smooth_waveform", true))
     val confirmStop = MutableStateFlow(prefs.getBoolean("confirm_stop", true))
 
     fun setKeepScreenOn(value: Boolean) { prefs.edit().putBoolean("keep_screen_on", value).apply(); keepScreenOn.value = value }
+    fun setDoNotDisturbWhileRecording(value: Boolean) {
+        prefs.edit().putBoolean(RecordingService.KEY_DND_WHILE_RECORDING, value).apply()
+        doNotDisturbWhileRecording.value = value
+    }
     fun setSmoothWaveform(value: Boolean) { prefs.edit().putBoolean("smooth_waveform", value).apply(); smoothWaveform.value = value }
     fun setConfirmStop(value: Boolean) { prefs.edit().putBoolean("confirm_stop", value).apply(); confirmStop.value = value }
     fun dismissSavedRecording() { sessionEvents.lastSaved.value = null }

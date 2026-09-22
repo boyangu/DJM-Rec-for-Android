@@ -45,7 +45,10 @@ analog output.
    the mixer, and **Include microphone** picks REC OUT with or without the mic bus on models that
    offer both (A9, V5). Make a short test recording first.
 5. In **Settings > Background recording**, allow unrestricted battery use once so a long set is not
-   throttled with the screen off.
+   throttled with the screen off. In **Settings > During a set**, allow **Do Not Disturb access**
+   so calls and notifications are silenced while recording and restored afterwards -- an incoming
+   call takes audio focus and covers the transport controls. The prompt above the transport offers
+   both, plus keeping the screen awake, and disappears once they are done.
    If the mixer is not recognised (for example a DJM-V5 with a product ID the app does not know
    yet), open **Recording setup > Mixer profile** and force the closest profile, or choose
    **Class-compliant only** to send no vendor commands. **Advanced USB format** lets you pick the
@@ -66,6 +69,8 @@ analog output.
 - WAV/FLAC recording, pause/resume and track markers.
 - Saved-set search, playback, sharing, export, rename and deletion.
 - Settings for automatic arming, waveform animation, screen wake and stop confirmation.
+- Do Not Disturb for the length of a recording, restored afterwards; alarms still sound and a mode
+  you set yourself is left untouched.
 - Background recording with a persistent notification. **Save & close** saves and ends capture.
 
 Keep USB connected during a set. Force-stop, reboot, cable loss and some Android battery/call

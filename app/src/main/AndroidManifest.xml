@@ -12,6 +12,10 @@
          throttles a background recording service on many OEM builds. GitHub-distributed, so the
          Play policy on this permission does not apply. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Lets the recorder silence calls and notifications for the length of a set. Inert until
+         the user also grants Do Not Disturb access in Android settings, which Set Recorder asks
+         for from Settings > During a set rather than on first launch. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

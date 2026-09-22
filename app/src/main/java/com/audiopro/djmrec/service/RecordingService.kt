@@ -115,6 +115,8 @@ class RecordingService : LifecycleService() {
         private const val HEALTH_UPDATE_INTERVAL_MS = 2_000L
         private const val CHECKPOINT_INTERVAL_MS = 5_000L
         private const val MAX_STALLED_USB_CHECKS = 3
+        /** Shared with MainViewModel, which owns the Settings toggle. */
+        const val KEY_DND_WHILE_RECORDING = "dnd_while_recording"
     }
 
     inner class LocalBinder : android.os.Binder() {
@@ -150,6 +152,17 @@ class RecordingService : LifecycleService() {
     val health: StateFlow<RecordingHealth> = _health.asStateFlow()
 
     private var wakeLock: PowerManager.WakeLock? = null
+
+    /** Silences calls and notifications for the length of a set; see DoNotDisturbController. */
+    private val doNotDisturb by lazy { DoNotDisturbController(this) }
+
+    /**
+     * Read at the moment it is needed rather than cached at startup, so toggling the setting
+     * applies to the very next recording without any plumbing between the UI and the service.
+     * SharedPreferences is an in-memory map after the first load, so this is not file I/O.
+     */
+    private fun readSetting(key: String, fallback: Boolean): Boolean =
+        getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean(key, fallback)
 
     // Dedicated urgent-audio-priority thread for pulling meter/elapsed data off the native
     // engine and refreshing the notification — kept separate from the main/UI thread so meter
@@ -319,6 +332,15 @@ class RecordingService : LifecycleService() {
                 com.audiopro.djmrec.diagnostics.RemoteDiagnostics.event("RecordingState", state.toString())
                 if (state is RecordingState.Error)
                     com.audiopro.djmrec.diagnostics.RemoteDiagnostics.issue("Recording failure", state.toString())
+                // Driven from the state itself rather than from the individual start/stop paths:
+                // recording can end through a normal save, an error, a USB unplug or the service
+                // being destroyed, and the phone must come off Do Not Disturb in every one of
+                // them. The controller ignores repeat calls, so pause/resume costs nothing.
+                if (state is RecordingState.Recording || state is RecordingState.Paused) {
+                    doNotDisturb.engage(readSetting(KEY_DND_WHILE_RECORDING, true))
+                } else {
+                    doNotDisturb.release()
+                }
             }
         }
         val settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -1033,6 +1055,9 @@ class RecordingService : LifecycleService() {
             releaseIsoConnectionIfNeeded()
         }
         releaseWakeLock()
+        // The state collector is already cancelled by the time we get here, so the phone would
+        // otherwise stay silenced after the service goes away.
+        doNotDisturb.release()
         monitorHandler.removeCallbacksAndMessages(null)
         monitorThread.quitSafely()
         super.onDestroy()

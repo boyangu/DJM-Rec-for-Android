@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.47.0 (2026-09-22)
+
+- Silence calls and notifications for the length of a recording. An incoming call is the thing
+  that actually ruins a set: Android hands audio focus to telephony and drops a full-screen call
+  UI over the transport controls. Set Recorder now puts the phone into Do Not Disturb when
+  recording starts and restores the previous setting when it stops, through every way a recording
+  can end -- normal save, error, USB unplug or the service being killed. Alarms still sound, and a
+  Do Not Disturb mode you turned on yourself is never replaced or cleared. Needs Do Not Disturb
+  access, which the app asks for rather than assuming; until it is granted the feature does
+  nothing. Toggle under Settings > During a set.
+- Add a pre-flight prompt on the recorder screen, shown only before recording, for the three
+  things that cost people sets: Do Not Disturb access, unrestricted battery use, and keeping the
+  screen awake. One tap each, dismissible, and it disappears once there is nothing left to do.
+- Group the screen-awake setting with Do Not Disturb under a new "During a set" heading instead of
+  leaving it under Display, and say plainly that capture continues with the screen off -- it keeps
+  the meters visible, it is not what keeps the recording alive.
+
 ## v0.46.0 (2026-09-22)
 
 - Fix periodic clicks cut into recorded files. Every 5 s the recording checkpoint patched the

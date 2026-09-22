@@ -101,6 +101,11 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
             FilledTonalIconButton(onClick = { setupOpen = true }) { Icon(Icons.Default.Tune, "Recording setup") }
         }
     }
+    // Only before a set: once recording has started the phone is already however it is, and a
+    // prompt would just be taking space away from the meters.
+    val preflight: @Composable () -> Unit = {
+        if (!active && !saving) SetPreflightBanner(viewModel)
+    }
     val signalPanel: @Composable () -> Unit = {
         Surface(Modifier.fillMaxSize(), shape = RoundedCornerShape(20.dp), color = SurfaceDark) {
             BoxWithConstraints(Modifier.padding(12.dp)) {
@@ -189,11 +194,16 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
                     inputHeader()
                     Box(Modifier.weight(1f)) { signalPanel() }
                 }
-                Column(Modifier.weight(1f).align(Alignment.CenterVertically)) { transport(true) }
+                Column(Modifier.weight(1f).align(Alignment.CenterVertically),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    preflight()
+                    transport(true)
+                }
             }
         } else {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 inputHeader()
+                preflight()
                 Box(Modifier.weight(1f)) { signalPanel() }
                 transport(false)
             }

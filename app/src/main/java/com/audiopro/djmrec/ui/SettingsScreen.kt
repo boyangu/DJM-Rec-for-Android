@@ -30,11 +30,17 @@ import com.audiopro.djmrec.update.UpdateChecker
 import com.audiopro.djmrec.update.UpdateInstaller
 import kotlinx.coroutines.launch
 
+private fun hasNotificationPolicyAccess(context: android.content.Context): Boolean = runCatching {
+    context.getSystemService(android.app.NotificationManager::class.java)
+        ?.isNotificationPolicyAccessGranted == true
+}.getOrDefault(false)
+
 @Composable
 fun SettingsScreen(viewModel: MainViewModel) {
     val waveform by viewModel.waveformEnabled.collectAsState()
     val smooth by viewModel.smoothWaveform.collectAsState()
     val keepScreen by viewModel.keepScreenOn.collectAsState()
+    val doNotDisturb by viewModel.doNotDisturbWhileRecording.collectAsState()
     val confirm by viewModel.confirmStop.collectAsState()
     val silenceHold by viewModel.silenceHoldMs.collectAsState()
     val context = LocalContext.current
@@ -153,7 +159,43 @@ fun SettingsScreen(viewModel: MainViewModel) {
         Text("Display", style = MaterialTheme.typography.titleLarge)
         PreferenceSwitch("Live waveform", "RGB: red bass, green mids, blue highs. Mixed frequencies blend colors.", waveform, viewModel::setWaveformEnabled)
         PreferenceSwitch("Smooth waveform", "Scroll at the display frame rate. Turn off to reduce graphics work.", smooth, viewModel::setSmoothWaveform)
-        PreferenceSwitch("Keep recorder screen awake", "Applies while monitoring or recording. Capture also works with screen locked.", keepScreen, viewModel::setKeepScreenOn)
+        Text("During a set", style = MaterialTheme.typography.titleLarge)
+        PreferenceSwitch(
+            "Silence calls and notifications",
+            "Puts the phone in Do Not Disturb for the length of each recording and restores your " +
+                "previous setting afterwards. Alarms still sound. A Do Not Disturb mode you turned " +
+                "on yourself is left alone.",
+            doNotDisturb, viewModel::setDoNotDisturbWhileRecording
+        )
+        // Re-read on resume: the grant is made in Android settings, which gives the app no callback.
+        var policyAccess by remember { mutableStateOf(hasNotificationPolicyAccess(context)) }
+        val policyAccessLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { policyAccess = hasNotificationPolicyAccess(context) }
+        val settingsOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+        DisposableEffect(settingsOwner) {
+            val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                    policyAccess = hasNotificationPolicyAccess(context)
+                }
+            }
+            settingsOwner.lifecycle.addObserver(observer)
+            onDispose { settingsOwner.lifecycle.removeObserver(observer) }
+        }
+        if (doNotDisturb) {
+            if (policyAccess) {
+                Text("Do Not Disturb access: granted", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            } else {
+                Text("Android needs one more permission before this can work.",
+                    style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Button(onClick = {
+                    policyAccessLauncher.launch(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Text("Allow Do Not Disturb access")
+                }
+            }
+        }
+        PreferenceSwitch("Keep recorder screen awake", "Keeps the meters and waveform visible while monitoring or recording. Capture also works with the screen locked.", keepScreen, viewModel::setKeepScreenOn)
         Text("Background recording", style = MaterialTheme.typography.titleLarge)
         val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
         var batteryExempt by remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName)) }
