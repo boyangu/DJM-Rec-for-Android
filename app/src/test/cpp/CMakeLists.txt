@@ -28,6 +28,10 @@ djmrec_add_test(UsbSampleRateTest)
 djmrec_add_test(ChannelActivityTest)
 djmrec_add_test(AudioSignalTest)
 djmrec_add_test(WaveformSnapshotTest)
+djmrec_add_test(MeterCalculatorTest)
+# MeterCalculator.h takes an oboe::AudioFormat to select its decode loop. host_stubs supplies
+# just that enum so the metering maths is testable off-device without the NDK.
+target_include_directories(MeterCalculatorTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs")
 # WaveformAnalyzer.cpp is the only non-header dependency.
 target_sources(AudioSignalTest PRIVATE "${DJMREC_NATIVE_SRC}/WaveformAnalyzer.cpp")
 target_sources(WaveformSnapshotTest PRIVATE "${DJMREC_NATIVE_SRC}/WaveformAnalyzer.cpp")

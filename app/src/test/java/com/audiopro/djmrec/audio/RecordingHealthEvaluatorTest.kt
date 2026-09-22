@@ -14,7 +14,8 @@ class RecordingHealthEvaluatorTest {
         nonZeroByteDelta: Long = 500,
         missedPacketDelta: Long = 0,
         writerErrorCode: Int = 0,
-        xRuns: Int = 0
+        xRuns: Int = 0,
+        signalPresent: Boolean = true
     ) = RecordingHealthInput(
         recording = recording,
         usbIso = true,
@@ -27,15 +28,16 @@ class RecordingHealthEvaluatorTest {
         missedPacketDelta = missedPacketDelta,
         resubmitFailures = 0,
         xRuns = xRuns,
-        writerErrorCode = writerErrorCode
+        writerErrorCode = writerErrorCode,
+        signalPresent = signalPresent
     )
 
     @Test
     fun `nonzero USB noise with silent selected channels is not ready`() {
         assertEquals(RecordingHealthLevel.SILENCE,
-            RecordingHealthEvaluator.evaluate(input(recording = false).copy(selectedPeakDb = -60f)).level)
+            RecordingHealthEvaluator.evaluate(input(recording = false, signalPresent = false)).level)
         assertEquals(RecordingHealthLevel.GOOD,
-            RecordingHealthEvaluator.evaluate(input(recording = false).copy(selectedPeakDb = -20f)).level)
+            RecordingHealthEvaluator.evaluate(input(recording = false, signalPresent = true)).level)
     }
 
     @Test

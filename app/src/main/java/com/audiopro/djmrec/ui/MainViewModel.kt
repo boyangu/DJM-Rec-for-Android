@@ -18,6 +18,7 @@ import com.audiopro.djmrec.audio.ChannelLevel
 import com.audiopro.djmrec.audio.RecordingFormat
 import com.audiopro.djmrec.audio.RecordingHealth
 import com.audiopro.djmrec.audio.RecordingState
+import com.audiopro.djmrec.audio.SignalDetector
 import com.audiopro.djmrec.audio.StereoLevels
 import com.audiopro.djmrec.service.RecordingService
 import com.audiopro.djmrec.usb.CaptureOverride
@@ -47,6 +48,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_USB_CHANNEL_OFFSET = "usb_channel_offset"
         private const val KEY_WAVEFORM_ENABLED = "waveform_enabled"
         private const val KEY_INCLUDE_MIC = "include_mic_in_mix"
+        private const val KEY_SILENCE_HOLD_MS = "silence_hold_ms"
         private fun captureLevelKey(device: UsbAudioDeviceInfo) = "usb_capture_level_${device.vendorId}_${device.productId}"
         private fun sampleRateKey(device: UsbAudioDeviceInfo) = "sample_rate_${device.vendorId}_${device.productId}"
     }
@@ -132,6 +134,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _recordingGainDb = MutableStateFlow(prefs.getInt("recording_gain_db", 0).coerceIn(-12, 24))
     val recordingGainDb: StateFlow<Int> = _recordingGainDb.asStateFlow()
 
+    /**
+     * Hold-filtered "is the mixer feeding us audio", mirrored from the service so the recorder
+     * label cannot disagree with the health line or the notification.
+     */
+    private val _signalPresent = MutableStateFlow(false)
+    val signalPresent: StateFlow<Boolean> = _signalPresent.asStateFlow()
+
+    /** How long the input must stay quiet before the UI reports no signal. */
+    private val _silenceHoldMs = MutableStateFlow(
+        SignalDetector.sanitizeHoldMs(prefs.getLong(KEY_SILENCE_HOLD_MS, SignalDetector.DEFAULT_HOLD_MS))
+    )
+    val silenceHoldMs: StateFlow<Long> = _silenceHoldMs.asStateFlow()
+
     /** Route REC OUT including the mic bus (vendor source 0x0a) vs. without mic (0x0e). */
     private val _includeMicInMix = MutableStateFlow(prefs.getBoolean(KEY_INCLUDE_MIC, true))
     val includeMicInMix: StateFlow<Boolean> = _includeMicInMix.asStateFlow()
@@ -183,12 +198,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             service.setVisualsVisible(uiVisible, waveformVisible)
             service.setWaveformEnabled(_waveformEnabled.value)
             service.setRecordingGainDb(_recordingGainDb.value)
+            service.setSilenceHoldMs(_silenceHoldMs.value)
             viewModelScope.launch { service.saving.collect { saving.value = it } }
             viewModelScope.launch { service.state.collect { _recordingState.value = it } }
             viewModelScope.launch { service.levels.collect { _levels.value = it } }
             viewModelScope.launch { service.elapsedMillis.collect { _elapsedMillis.value = it } }
             viewModelScope.launch { service.waveformBins.collect { _waveformBins.value = it } }
             viewModelScope.launch { service.health.collect { _recordingHealth.value = it } }
+            viewModelScope.launch { service.signalPresent.collect { _signalPresent.value = it } }
             ensureLiveMonitoring()
         }
 
@@ -254,6 +271,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _recordingGainDb.value = value
         prefs.edit().putInt("recording_gain_db", value).apply()
         boundService?.setRecordingGainDb(value)
+    }
+
+    /**
+     * Applies immediately, including mid-recording: the hold only affects what the UI reports,
+     * never the audio being captured, so there is no reason to lock it like the gain controls.
+     */
+    fun setSilenceHoldMs(holdMs: Long) {
+        val value = SignalDetector.sanitizeHoldMs(holdMs)
+        if (value == _silenceHoldMs.value) return
+        _silenceHoldMs.value = value
+        prefs.edit().putLong(KEY_SILENCE_HOLD_MS, value).apply()
+        boundService?.setSilenceHoldMs(value)
     }
 
     fun setWaveformEnabled(enabled: Boolean) {

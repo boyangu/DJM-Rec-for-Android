@@ -54,7 +54,7 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
     val connectionNotice by viewModel.connectionNotice.collectAsState()
     val context = LocalContext.current
     val active = state is RecordingState.Recording || state is RecordingState.Paused
-    val signal = levels.left.peakDb > -55 || levels.right.peakDb > -55
+    val signal by viewModel.signalPresent.collectAsState()
     DisposableEffect(keepScreenOn, active, state) {
         val window = (context as? ComponentActivity)?.window
         if (keepScreenOn && (active || state is RecordingState.Monitoring))
@@ -125,7 +125,7 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
                     if (waveform && !compact) LiveRgbWaveform(viewModel.waveformBins, Modifier.fillMaxWidth().weight(1f), smooth = smooth,
                         active = state is RecordingState.Monitoring || active, onVisible = viewModel::setWaveformVisible)
                     else if (!compact) Spacer(Modifier.weight(1f))
-                    StereoVuMeter(levels)
+                    StereoVuMeter(levels, active = state is RecordingState.Monitoring || active)
                 }
             }
         }
@@ -277,19 +277,6 @@ internal fun RecordingSetupControls(viewModel: MainViewModel) {
                 "(default USB ${profile.defaultCaptureChannelOffset + 1}/${profile.defaultCaptureChannelOffset + 2}); " +
                 "S11 uses its dedicated REC OUT. Selection is remembered per mixer.",
             style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-    }
-}
-
-/** Single-select chip row used for sample rate and mixer capture level. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun OptionChips(options: List<Pair<Int, String>>, selected: Int, enabled: Boolean, onSelect: (Int) -> Unit) {
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { (value, label) ->
-            FilterChip(selected = value == selected, enabled = enabled, onClick = { onSelect(value) },
-                label = { Text(label) }, modifier = Modifier.heightIn(min = 40.dp))
-        }
     }
 }
 

@@ -36,7 +36,9 @@ analog output.
    The top-panel **MULTI I/O / mobile-device port** (DJM-A9, DJM-V5) is a USB *host* port made for
    iPhone/iPad running DJM-REC; Android cannot act as a USB audio device, so it will never work there.
 2. Open Set Recorder and allow USB access. Tap the source name to choose an input if several are connected.
-3. Play audio and check both meters. Automatic arming starts monitoring, not recording.
+3. Play audio and check both meters. Automatic arming starts monitoring, not recording. The
+   status reads "no signal" only after the input has stayed silent for the **Silence hold** time
+   (Settings > Capture, 5 s by default), so it does not flicker during quiet passages.
 4. Open **Recording setup** to choose WAV/FLAC, sample rate, gain and a USB channel pair. Software
    gain defaults to **0 dB**; on the DJM-A9 and DJM-V10 prefer the **Mixer USB recording level**
    control, which sets the mixer's own USB send level. Choosing a pair routes MIX/REC OUT to it on

@@ -229,11 +229,7 @@ void UsbAudioEngine::onUsbIsoFrames(const int32_t* interleavedStereo, size_t fra
 
     const StereoMeterReading reading =
         MeterCalculator::analyze(processedStereo, static_cast<int32_t>(frameCount), oboe::AudioFormat::I32);
-    mLeftPeakDb.store(reading.leftPeakDb, std::memory_order_relaxed);
-    mLeftRmsDb.store(reading.leftRmsDb, std::memory_order_relaxed);
-    mRightPeakDb.store(reading.rightPeakDb, std::memory_order_relaxed);
-    mRightRmsDb.store(reading.rightRmsDb, std::memory_order_relaxed);
-    mClipping.store(reading.clipping, std::memory_order_relaxed);
+    accumulateMeter(reading);
 
     if (mWaveformEnabled.load(std::memory_order_relaxed) && mWaveformAnalyzer) {
         mWaveformAnalyzer->pushFrames(processedStereo, frameCount);
@@ -306,11 +302,7 @@ oboe::DataCallbackResult UsbAudioEngine::onAudioReady(oboe::AudioStream* /*strea
     // reflects the signal actually present at the mixer's output at all times.
     const StereoMeterReading reading =
         MeterCalculator::analyze(canonical.data(), numFrames, oboe::AudioFormat::I32);
-    mLeftPeakDb.store(reading.leftPeakDb, std::memory_order_relaxed);
-    mLeftRmsDb.store(reading.leftRmsDb, std::memory_order_relaxed);
-    mRightPeakDb.store(reading.rightPeakDb, std::memory_order_relaxed);
-    mRightRmsDb.store(reading.rightRmsDb, std::memory_order_relaxed);
-    mClipping.store(reading.clipping, std::memory_order_relaxed);
+    accumulateMeter(reading);
 
     mAaudioLeftPeakSinceLog = std::max(mAaudioLeftPeakSinceLog, reading.leftPeakDb);
     mAaudioRightPeakSinceLog = std::max(mAaudioRightPeakSinceLog, reading.rightPeakDb);
@@ -565,15 +557,16 @@ void UsbAudioEngine::encoderThreadLoop() {
     }
 }
 
-void UsbAudioEngine::getLevels(float outLevels[4]) const {
-    outLevels[0] = mLeftPeakDb.load(std::memory_order_relaxed);
-    outLevels[1] = mLeftRmsDb.load(std::memory_order_relaxed);
-    outLevels[2] = mRightPeakDb.load(std::memory_order_relaxed);
-    outLevels[3] = mRightRmsDb.load(std::memory_order_relaxed);
+void UsbAudioEngine::getLevels(float outLevels[4]) {
+    // Drain: hand back the peak of everything since the previous poll, then re-arm at the floor.
+    outLevels[0] = mLeftPeakDb.exchange(kMeterFloorDb, std::memory_order_relaxed);
+    outLevels[1] = mLeftRmsDb.exchange(kMeterFloorDb, std::memory_order_relaxed);
+    outLevels[2] = mRightPeakDb.exchange(kMeterFloorDb, std::memory_order_relaxed);
+    outLevels[3] = mRightRmsDb.exchange(kMeterFloorDb, std::memory_order_relaxed);
 }
 
-bool UsbAudioEngine::isClipping() const {
-    return mClipping.load(std::memory_order_relaxed);
+bool UsbAudioEngine::isClipping() {
+    return mClipping.exchange(false, std::memory_order_relaxed);
 }
 
 int64_t UsbAudioEngine::getElapsedMillis() const {
@@ -619,6 +612,8 @@ std::string UsbAudioEngine::getDiagnosticSummary() {
         << "xrun_count=" << mXRunCount.load(std::memory_order_relaxed) << '\n'
         << "recording_error_code=" << mRecordingErrorCode.load(std::memory_order_relaxed) << '\n'
         << "elapsed_ms=" << mElapsedMillis.load(std::memory_order_relaxed) << '\n'
+        // Non-destructive on purpose: a support report must never swallow a peak that the
+        // VU meter is about to display. Reports the in-flight accumulator since the last poll.
         << "levels_db=peak_l:" << mLeftPeakDb.load(std::memory_order_relaxed)
         << " rms_l:" << mLeftRmsDb.load(std::memory_order_relaxed)
         << " peak_r:" << mRightPeakDb.load(std::memory_order_relaxed)

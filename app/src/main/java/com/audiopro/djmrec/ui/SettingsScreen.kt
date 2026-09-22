@@ -21,6 +21,8 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.audiopro.djmrec.BuildConfig
+import com.audiopro.djmrec.audio.SignalDetector
+import com.audiopro.djmrec.ui.components.OptionChips
 import com.audiopro.djmrec.ui.theme.TextSecondary
 import com.audiopro.djmrec.update.AppUpdate
 import com.audiopro.djmrec.update.UpdateCheckResult
@@ -34,6 +36,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val smooth by viewModel.smoothWaveform.collectAsState()
     val keepScreen by viewModel.keepScreenOn.collectAsState()
     val confirm by viewModel.confirmStop.collectAsState()
+    val silenceHold by viewModel.silenceHoldMs.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val diagnostics by com.audiopro.djmrec.diagnostics.RemoteDiagnostics.enabled.collectAsState()
@@ -122,6 +125,23 @@ fun SettingsScreen(viewModel: MainViewModel) {
         Text("Capture", style = MaterialTheme.typography.titleLarge)
         Text("Monitoring arms automatically after USB connection and permission. Recording starts only when you press Record.", color = TextSecondary)
         PreferenceSwitch("Confirm stop", "Ask before stopping from the recorder. Notification Save & close always acts immediately.", confirm, viewModel::setConfirmStop)
+        Surface(shape = RoundedCornerShape(20.dp), tonalElevation = 1.dp) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Silence hold", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "How long the input must stay below -60 dBFS before the recorder reports no signal. " +
+                        "Music is full of brief quiet moments, so a short hold makes the status flicker. " +
+                        "Signal is always detected instantly; only the return to \"no signal\" waits.",
+                    style = MaterialTheme.typography.bodySmall, color = TextSecondary
+                )
+                OptionChips(
+                    options = SignalDetector.HOLD_CHOICES_MS.map { it to "${it / 1000} s" },
+                    selected = silenceHold,
+                    enabled = true,
+                    onSelect = viewModel::setSilenceHoldMs
+                )
+            }
+        }
         Surface(shape = RoundedCornerShape(20.dp), tonalElevation = 1.dp) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { RecordingSetupControls(viewModel) }
         }

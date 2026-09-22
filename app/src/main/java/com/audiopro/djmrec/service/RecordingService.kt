@@ -35,6 +35,7 @@ import com.audiopro.djmrec.audio.RecordingHealthEvaluator
 import com.audiopro.djmrec.audio.RecordingHealthInput
 import com.audiopro.djmrec.audio.RecordingHealthLevel
 import com.audiopro.djmrec.audio.RecordingState
+import com.audiopro.djmrec.audio.SignalDetector
 import com.audiopro.djmrec.audio.StereoLevels
 import com.audiopro.djmrec.storage.PendingRecordingOutput
 import com.audiopro.djmrec.storage.RecordingOutputManager
@@ -129,6 +130,15 @@ class RecordingService : LifecycleService() {
     private val _levels = MutableStateFlow(StereoLevels(floorLevel, floorLevel))
     val levels: StateFlow<StereoLevels> = _levels.asStateFlow()
 
+    /**
+     * The single answer to "is the mixer feeding us audio", shared by the recorder label, the
+     * health evaluator and the notification so they can never disagree. Owned by the monitor
+     * thread; see [SignalDetector] for why a raw threshold comparison is not good enough.
+     */
+    private val signalDetector = SignalDetector()
+    private val _signalPresent = MutableStateFlow(false)
+    val signalPresent: StateFlow<Boolean> = _signalPresent.asStateFlow()
+
     private val _elapsedMillis = MutableStateFlow(0L)
     val elapsedMillis: StateFlow<Long> = _elapsedMillis.asStateFlow()
 
@@ -193,11 +203,16 @@ class RecordingService : LifecycleService() {
             // permanently until the next startPolling().
             if (!sessionAlive()) return
             if (captureActive()) {
+                // getLevels() is a draining read: this is the peak of every callback since the
+                // previous tick, not a snapshot, so nothing between polls is missed.
                 val raw = AudioEngine.getLevels()
                 val clipping = AudioEngine.isClipping()
                 _levels.value = StereoLevels(
                     left = ChannelLevel(peakDb = raw[0], rmsDb = raw[1], isClipping = clipping),
                     right = ChannelLevel(peakDb = raw[2], rmsDb = raw[3], isClipping = clipping)
+                )
+                _signalPresent.value = signalDetector.update(
+                    SystemClock.elapsedRealtime(), maxOf(raw[0], raw[2])
                 )
                 _elapsedMillis.value = AudioEngine.getElapsedMillis()
             }
@@ -270,7 +285,7 @@ class RecordingService : LifecycleService() {
                     resubmitFailures = resubmitDelta,
                     xRuns = xRunDelta,
                     writerErrorCode = AudioEngine.getRecordingErrorCode(),
-                    selectedPeakDb = maxOf(_levels.value.left.peakDb, _levels.value.right.peakDb)
+                    signalPresent = _signalPresent.value
                 )
             )
             _health.value = health
@@ -306,7 +321,9 @@ class RecordingService : LifecycleService() {
                     com.audiopro.djmrec.diagnostics.RemoteDiagnostics.issue("Recording failure", state.toString())
             }
         }
-        setRecordingGainDb(getSharedPreferences("settings", Context.MODE_PRIVATE).getInt("recording_gain_db", 0))
+        val settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        setRecordingGainDb(settings.getInt("recording_gain_db", 0))
+        setSilenceHoldMs(settings.getLong("silence_hold_ms", SignalDetector.DEFAULT_HOLD_MS))
         createNotificationChannel()
         lifecycleScope.launch {
             var previous: String? = null
@@ -347,6 +364,16 @@ class RecordingService : LifecycleService() {
 
     fun setRecordingGainDb(gainDb: Int) {
         AudioEngine.setRecordingGainDb(gainDb)
+    }
+
+    /** Applies the user's Silence hold preference; takes effect on the current gap immediately. */
+    fun setSilenceHoldMs(holdMs: Long) {
+        signalDetector.holdMs = SignalDetector.sanitizeHoldMs(holdMs)
+    }
+
+    private fun resetSignalDetector() {
+        signalDetector.reset()
+        _signalPresent.value = false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -883,6 +910,7 @@ class RecordingService : LifecycleService() {
                 _state.value = RecordingState.Idle
                 _elapsedMillis.value = 0L
                 _levels.value = StereoLevels(floorLevel, floorLevel)
+                resetSignalDetector()
                 _waveformBins.value = emptyWaveform
                 _health.value = RecordingHealth.Ready
                 ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -937,6 +965,7 @@ class RecordingService : LifecycleService() {
         monitorHandler.removeCallbacksAndMessages(null)
         _state.value = RecordingState.Idle
         _levels.value = StereoLevels(floorLevel, floorLevel)
+        resetSignalDetector()
         _waveformBins.value = emptyWaveform
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         (getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).appTasks.forEach { it.finishAndRemoveTask() }
@@ -1087,7 +1116,7 @@ class RecordingService : LifecycleService() {
         val isPaused = _state.value is RecordingState.Paused
         val isRecording = _state.value is RecordingState.Recording || isPaused
         val elapsed = formatElapsed(_elapsedMillis.value)
-        val hasSignal = _levels.value.left.peakDb > -50f || _levels.value.right.peakDb > -50f
+        val hasSignal = _signalPresent.value
 
         val contentIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),

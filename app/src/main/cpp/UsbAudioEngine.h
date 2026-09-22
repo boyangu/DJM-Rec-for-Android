@@ -8,6 +8,7 @@
 
 #include <oboe/Oboe.h>
 
+#include "MeterCalculator.h"
 #include "RingBuffer.h"
 #include "UsbIsoAudioSource.h"
 #include "WaveformAnalyzer.h"
@@ -68,9 +69,18 @@ public:
     int64_t stopRecording();
     void closeEngine();
 
-    /** [leftPeakDb, leftRmsDb, rightPeakDb, rightRmsDb] — safe to call from any thread. */
-    void getLevels(float outLevels[4]) const;
-    bool isClipping() const;
+    /**
+     * [leftPeakDb, leftRmsDb, rightPeakDb, rightRmsDb] — safe to call from any thread.
+     *
+     * DESTRUCTIVE: returns the maximum over every audio callback since the previous call and
+     * resets the accumulator to the meter floor. The UI polls at ~15 Hz while USB-iso callbacks
+     * arrive up to 8000x/second, so a plain "last callback wins" read examined roughly 0.1% of
+     * the audio -- it missed real transients and reported the floor whenever a poll happened to
+     * land in a zero crossing. Not const, because consuming the accumulator is a side effect.
+     */
+    void getLevels(float outLevels[4]);
+    /** DESTRUCTIVE: true if any callback clipped since the previous call; clears the flag. */
+    bool isClipping();
     int64_t getElapsedMillis() const;
     int32_t getXRunCount() const;
     void getUsbIsoTransferStats(uint64_t outStats[7]) const;
@@ -135,12 +145,32 @@ private:
     std::atomic<int32_t> mXRunCount{0};
     std::atomic<int64_t> mElapsedMillis{0};
 
-    // Meter state, updated every realtime callback, read by the UI's polling loop.
-    std::atomic<float> mLeftPeakDb{-60.0f};
-    std::atomic<float> mLeftRmsDb{-60.0f};
-    std::atomic<float> mRightPeakDb{-60.0f};
-    std::atomic<float> mRightRmsDb{-60.0f};
+    // Meter state: a max-since-last-read accumulator, not a snapshot. Every realtime callback
+    // folds its reading in with storeMax(); getLevels() drains it back to the floor. See the
+    // getLevels() contract above for why.
+    std::atomic<float> mLeftPeakDb{kMeterFloorDb};
+    std::atomic<float> mLeftRmsDb{kMeterFloorDb};
+    std::atomic<float> mRightPeakDb{kMeterFloorDb};
+    std::atomic<float> mRightRmsDb{kMeterFloorDb};
     std::atomic<bool> mClipping{false};
+
+    /** Lock-free "keep the larger value" fold, safe to call from a realtime audio callback. */
+    static void storeMax(std::atomic<float>& target, float value) {
+        float previous = target.load(std::memory_order_relaxed);
+        while (value > previous &&
+               !target.compare_exchange_weak(previous, value, std::memory_order_relaxed)) {
+            // compare_exchange_weak refreshed `previous`; retry only while we still win.
+        }
+    }
+
+    /** Folds one callback's reading into the accumulator. Shared by both capture paths. */
+    void accumulateMeter(const StereoMeterReading& reading) {
+        storeMax(mLeftPeakDb, reading.leftPeakDb);
+        storeMax(mLeftRmsDb, reading.leftRmsDb);
+        storeMax(mRightPeakDb, reading.rightPeakDb);
+        storeMax(mRightRmsDb, reading.rightRmsDb);
+        if (reading.clipping) mClipping.store(true, std::memory_order_relaxed);
+    }
 
 };
 

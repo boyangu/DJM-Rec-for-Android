@@ -60,6 +60,9 @@ WaveformAnalyzer::WaveformAnalyzer(int sampleRate) {
     const float sr = static_cast<float>(std::max(sampleRate, 8000));
     mFramesPerBin = std::max(1, static_cast<int>(sr / 163.0f));
     mBinDurationMillis = 1000.0f * mFramesPerBin / sr;
+    // Per-bin decay factor for the release envelope, derived from the real bin duration so the
+    // tail lasts the same wall-clock time at 44.1, 48 or 96 kHz.
+    mEnvelopeDecayPerBin = std::exp(-mBinDurationMillis / kEnvelopeReleaseMillis);
 
     // Low band: 20–250 Hz → red
     for (auto& filter : mLowFilter) designLowPass(filter, 250.0f, sr);
@@ -119,7 +122,9 @@ void WaveformAnalyzer::commitBin() {
     const int base = index * 4;
     const float invN = mCurrent.sampleCount > 0
         ? 1.0f / static_cast<float>(mCurrent.sampleCount) : 0.0f;
-    mBins[base + 0].store(mCurrent.peakAbs, std::memory_order_relaxed);
+    // Release envelope: never below what the previous bin decayed to, so silence tapers.
+    mEnvelope = std::max(mCurrent.peakAbs, mEnvelope * mEnvelopeDecayPerBin);
+    mBins[base + 0].store(mEnvelope, std::memory_order_relaxed);
     mBins[base + 1].store(mCurrent.lowSum * invN, std::memory_order_relaxed);
     mBins[base + 2].store(mCurrent.midSum * invN, std::memory_order_relaxed);
     mBins[base + 3].store(mCurrent.highSum * invN, std::memory_order_release);
@@ -157,6 +162,7 @@ void WaveformAnalyzer::reset() {
     for (auto& filter : mHighFilter) filter.resetState();
 
     mCurrent = {};
+    mEnvelope = 0.0f;
     for (auto& value : mBins) value.store(0.0f, std::memory_order_relaxed);
     mCommitted.store(0, std::memory_order_release);
 }

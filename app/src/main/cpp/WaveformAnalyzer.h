@@ -122,6 +122,14 @@ private:
     int mFramesPerBin = 294;
     float mBinDurationMillis = 1000.0f / 163.0f;
 
+    // Release envelope for the drawn amplitude. Each bin is an independent ~6 ms slice, so a
+    // track stopping mid-bin used to drop the waveform to a flat line in a single column. The
+    // envelope lets the published amplitude fall away over ~250 ms instead, which reads as a
+    // natural tail. Only the drawn amplitude is shaped; band ratios (the colours) are untouched.
+    static constexpr float kEnvelopeReleaseMillis = 250.0f;
+    float mEnvelope = 0.0f;
+    float mEnvelopeDecayPerBin = 0.0f;
+
     static constexpr float kMaxAmplitude = 2147483648.0f; // 2^31 for int32 → float norm
 };
 

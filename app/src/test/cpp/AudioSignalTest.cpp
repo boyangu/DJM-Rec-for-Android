@@ -53,10 +53,47 @@ int main() {
         analyzer.getBins(bins.data());
         for (float value : bins) assert(value == 0.0f);
     }
+    // Release envelope: a burst that stops dead must taper instead of dropping to a flat column
+    // in a single 6 ms bin. Only the drawn amplitude is shaped; timing is untouched.
+    {
+        const int rate = 48000;
+        djmrec::WaveformAnalyzer analyzer(rate);
+        std::vector<int32_t> burst(static_cast<size_t>(rate) / 2, 1073741824); // 0.25 s at half scale
+        analyzer.pushFrames(burst.data(), burst.size() / 2);
+        std::vector<int32_t> silence(static_cast<size_t>(rate) * 3 / 2, 0);    // then 0.75 s of nothing
+        analyzer.pushFrames(silence.data(), silence.size() / 2);
+
+        Snapshot bins{};
+        uint32_t end = 0;
+        analyzer.getBins(bins.data(), &end);
+        const float binMs = analyzer.binDurationMillis();
+        const int silentBins = static_cast<int>((750.0f / binMs));
+
+        // Walk backwards from the newest bin over the silent stretch: it must decrease
+        // monotonically rather than being zero everywhere.
+        float previous = -1.0f;
+        int decreasing = 0;
+        for (int i = djmrec::WaveformAnalyzer::kBinCount - silentBins;
+             i < djmrec::WaveformAnalyzer::kBinCount; ++i) {
+            const float value = bins[static_cast<size_t>(i) * 4];
+            if (previous >= 0.0f && value < previous) ++decreasing;
+            previous = value;
+        }
+        assert(decreasing > silentBins / 2);
+
+        // 250 ms time constant: after three of them (750 ms) the tail is down to ~2.5%.
+        const float newest = bins[(djmrec::WaveformAnalyzer::kBinCount - 1) * 4];
+        assert(newest < 0.05f);
+        // ...but one bin after the burst it is still clearly visible, i.e. no cliff.
+        const int justAfter = djmrec::WaveformAnalyzer::kBinCount - silentBins + 1;
+        assert(bins[static_cast<size_t>(justAfter) * 4] > 0.1f);
+    }
+
     int32_t samples[] = {0, 100, -100, std::numeric_limits<int32_t>::max(), std::numeric_limits<int32_t>::min()};
     djmrec::applyRecordingGain(samples, 5, 2.0f);
     assert(samples[0] == 0 && samples[1] == 200 && samples[2] == -200);
     assert(samples[3] == std::numeric_limits<int32_t>::max());
     assert(samples[4] == std::numeric_limits<int32_t>::min());
-    std::cout << "Audio signal checks passed: phase, stereo, bands, rates, history, reset, gain saturation\n";
+    std::cout << "Audio signal checks passed: phase, stereo, bands, rates, history, reset, "
+                 "envelope tail, gain saturation\n";
 }

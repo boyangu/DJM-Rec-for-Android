@@ -33,7 +33,12 @@ data class RecordingHealthInput(
     val resubmitFailures: Long,
     val xRuns: Int,
     val writerErrorCode: Int,
-    val selectedPeakDb: Float? = null,
+    /**
+     * Verdict from [SignalDetector], already hold-filtered. Previously this was an
+     * instantaneous peak sampled once every 2 s, which examined a fraction of a millisecond
+     * of audio and reported SILENCE whenever the tick landed between beats.
+     */
+    val signalPresent: Boolean = true,
     val minimumFreeBytes: Long = 64L * 1024 * 1024
 )
 
@@ -88,7 +93,7 @@ object RecordingHealthEvaluator {
                 input.remainingSeconds
             )
         }
-        if (input.usbIso && input.byteDelta > 0 && (input.nonZeroByteDelta == 0L || input.selectedPeakDb?.let { it <= -60f } == true)) {
+        if (input.usbIso && input.byteDelta > 0 && (input.nonZeroByteDelta == 0L || !input.signalPresent)) {
             return RecordingHealth(
                 RecordingHealthLevel.SILENCE,
                 "USB connected; no audible signal on the selected channels",

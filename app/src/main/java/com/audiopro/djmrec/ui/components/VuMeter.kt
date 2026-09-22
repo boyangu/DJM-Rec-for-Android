@@ -1,7 +1,5 @@
 package com.audiopro.djmrec.ui.components
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,10 +14,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
@@ -37,9 +42,12 @@ import com.audiopro.djmrec.ui.theme.MeterAmber
 import com.audiopro.djmrec.ui.theme.MeterGreen
 import com.audiopro.djmrec.ui.theme.MeterRed
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private const val METER_FLOOR_DB = -60f
-private const val METER_CEILING_DB = 3f
+// 0 dBFS, not +3: the native meter clamps to 0 (MeterCalculator.h amplitudeToDb), so a
+// higher ceiling left the red zone permanently unreachable.
+private const val METER_CEILING_DB = 0f
 private const val CLIP_LATCH_MS = 1500L
 
 private fun dbToFraction(db: Float): Float =
@@ -54,21 +62,29 @@ private fun colorForFraction(fraction: Float): Color = when {
 /**
  * Horizontal stereo VU meter. Two horizontal bars (L on top, R below) with clip indicators
  * and a compact dB scale row beneath. Designed for a CDJ-style stacked layout.
+ *
+ * Digital peak-meter ballistics: instant attack, exponential release, and a peak-hold marker
+ * (see [MeterBallistics]). The service publishes levels at only ~15 Hz, so the bars are advanced
+ * on the display frame clock instead of being drawn straight from each sample -- otherwise they
+ * stair-step and snap to the floor between polls.
+ *
+ * @param active whether audio is flowing. When false the frame loop does not run, so an idle
+ *   meter costs nothing.
  */
 @Composable
-fun StereoVuMeter(levels: StereoLevels, modifier: Modifier = Modifier) {
+fun StereoVuMeter(levels: StereoLevels, modifier: Modifier = Modifier, active: Boolean = true) {
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        HorizontalChannelMeter(label = "L", level = levels.left)
-        HorizontalChannelMeter(label = "R", level = levels.right)
+        HorizontalChannelMeter(label = "L", level = levels.left, active = active)
+        HorizontalChannelMeter(label = "R", level = levels.right, active = active)
         HorizontalDbScale()
     }
 }
 
 @Composable
-private fun HorizontalChannelMeter(label: String, level: ChannelLevel) {
+private fun HorizontalChannelMeter(label: String, level: ChannelLevel, active: Boolean) {
     var clipLatched by remember { mutableStateOf(false) }
 
     LaunchedEffect(level.isClipping) {
@@ -80,17 +96,49 @@ private fun HorizontalChannelMeter(label: String, level: ChannelLevel) {
         }
     }
 
-    val rmsFraction by animateFloatAsState(
-        targetValue = dbToFraction(level.rmsDb),
-        animationSpec = tween(durationMillis = 80),
-        label = "rmsFraction"
-    )
-    val peakFraction = dbToFraction(level.peakDb)
+    val ballistics = remember { MeterBallistics() }
+    // Snapshot state the frame loop writes and the Canvas reads.
+    val peakDb = remember { mutableFloatStateOf(METER_FLOOR_DB) }
+    val peakHoldDb = remember { mutableFloatStateOf(METER_FLOOR_DB) }
+    val rmsDb = remember { mutableFloatStateOf(METER_FLOOR_DB) }
+    val owner = LocalLifecycleOwner.current
+
+    // Keeps the frame loop pointed at the newest sample without restarting it when levels change
+    // -- restarting every 66 ms would reset the time base and defeat the decay entirely.
+    val latest by rememberUpdatedState(level)
+
+    LaunchedEffect(active, owner) {
+        if (!active) {
+            ballistics.reset()
+            peakDb.floatValue = METER_FLOOR_DB
+            peakHoldDb.floatValue = METER_FLOOR_DB
+            rmsDb.floatValue = METER_FLOOR_DB
+            return@LaunchedEffect
+        }
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            // Reuse the waveform's 60 Hz cap so a 144 Hz panel does not burn battery here.
+            val limiter = WaveformFrameLimiter()
+            while (isActive) withFrameNanos { nanos ->
+                if (limiter.shouldRender(nanos)) {
+                    val sample = latest
+                    ballistics.update(nanos, sample.peakDb, sample.rmsDb)
+                    peakDb.floatValue = ballistics.peakDb
+                    peakHoldDb.floatValue = ballistics.peakHoldDb
+                    rmsDb.floatValue = ballistics.rmsDb
+                }
+            }
+        }
+    }
+
+    // The bars are read inside the draw lambdas below, not here, so a new frame only re-runs the
+    // draw phase. The numeric readout goes through derivedStateOf so it recomposes when the
+    // displayed integer changes rather than on all 60 frames a second.
+    val readoutDb by remember { derivedStateOf { peakDb.floatValue.toInt() } }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
-            contentDescription = "$label input, peak ${level.peakDb.toInt()} dBFS" +
+            contentDescription = "$label input, peak $readoutDb dBFS" +
                 if (clipLatched) ", clipping" else ""
         }
     ) {
@@ -121,14 +169,14 @@ private fun HorizontalChannelMeter(label: String, level: ChannelLevel) {
         Box(modifier = Modifier.weight(1f).height(18.dp)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 drawHorizontalMeterTrack()
-                drawHorizontalMeterFill(rmsFraction)
-                drawHorizontalPeakLine(peakFraction)
+                drawHorizontalMeterFill(dbToFraction(rmsDb.floatValue))
+                drawHorizontalPeakLine(dbToFraction(peakHoldDb.floatValue))
             }
         }
 
         // Peak dB readout
         Text(
-            text = "${level.peakDb.toInt()}",
+            text = "$readoutDb",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(28.dp).padding(start = 6.dp)
@@ -138,7 +186,7 @@ private fun HorizontalChannelMeter(label: String, level: ChannelLevel) {
 
 @Composable
 private fun HorizontalDbScale() {
-    val marks = listOf(-60, -48, -36, -24, -12, -6, 0, 3)
+    val marks = listOf(-60, -48, -36, -24, -12, -6, -3, 0)
     Layout(
         modifier = Modifier.fillMaxWidth().padding(start = 30.dp, end = 34.dp),
         content = {

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.45.0 (2026-09-22)
+
+- Fix the input status flickering between "INPUT LIVE" and "ARMED / NO SIGNAL" several times a
+  second. The meter atomics were overwritten by every USB packet (about 0.125 ms of audio) and
+  polled 66 ms apart, so the UI judged the signal from roughly 0.1% of what the mixer sent and
+  saw the floor whenever a poll landed in a gap between beats.
+- Native levels are now a max-since-last-read accumulator: every callback folds in, each poll
+  drains it. Nothing between polls is missed, so transients always register.
+- Add a **Silence hold** setting (Settings > Capture, default 5 s, also 1/2/10/30 s). Signal is
+  still detected instantly; only the return to "no signal" waits for the input to stay below
+  -60 dBFS for the whole window. One `SignalDetector` now feeds the recorder label, the health
+  evaluator and the notification, which previously used three different thresholds (-55, -60
+  and -50 dBFS) and could disagree at the same instant.
+- Give the VU meter real digital peak-meter ballistics: instant attack, 20 dB/s release, and a
+  peak-hold marker that sits for 1.5 s before falling. The bars advance on the display frame
+  clock rather than the 15 Hz poll, so they glide instead of stair-stepping. The meter scale now
+  ends at 0 dBFS, since the native meter clamps there and the old +3 dB red zone was unreachable.
+- Give the RGB waveform a 250 ms release envelope, so audio stopping dead leaves a tapering tail
+  instead of a one-column cliff. Band colours and timing are unchanged.
+
 ## v0.44.0 (2026-09-22)
 
 - Rename the app to **Set Recorder** and replace the launcher icon with a mirrored blue/amber/cream
