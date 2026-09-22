@@ -16,6 +16,7 @@ Choose the **release APK** for everyday use. The debug APK is for testing.
 | DJM-V10 | Profile matches the Linux driver tables (12-ch 24-bit, USB 1/2 … 11/12 routable to REC OUT); hardware test pending |
 | DJM-V5 | USB IDs (2b73:0058-005b), REC OUT with/without mic options and the six-step USB level confirmed from AlphaTheta's own Setting Utility; wire format still unverified. Connect it, then open **Diagnostics** from the menu drawer (top-left) and use **Copy USB descriptors** and share the output |
 | DJM-S11 | Experimental mixer profile; hardware testing needed |
+| DDJ-FLX10 | Profile from a real descriptor dump (2b73:0041, 10-ch 24-bit in, 44.1 kHz, class-compliant UAC2); which USB pair carries the recording mix is still being confirmed |
 | XDJ-XZ | Experimental USB capture; automatic master selection on USB 5/6 |
 | XDJ-AZ, OPUS-QUAD, OMNIS-DUO | Experimental USB capture; automatic master selection on USB 1/2 |
 | XDJ-RX3 | Recognized, but its documented USB connection has no recording input |

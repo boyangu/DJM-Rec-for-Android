@@ -36,6 +36,20 @@ class PioneerMixerProfileTest {
     }
 
     @Test
+    fun `DDJ-FLX10 is class compliant with keepalive and no vendor routing`() {
+        val profile = PioneerMixerProfile.find(PioneerMixerProfile.ALPHATHETA_VENDOR_ID, 0x0041)!!
+        assertEquals(PioneerMixerProfile.DDJ_FLX10, profile)
+        assertFalse(profile.hasVendorCaptureOverride)
+        assertEquals(listOf(44_100), profile.vendorCaptureSampleRates)
+        assertTrue(profile.requiresPlaybackTraffic)
+        assertEquals(1, profile.playbackInterface)
+        assertEquals(PioneerMixerProfile.RouteReadMode.NONE, profile.routeReadMode)
+        for (output in 0 until profile.outputCount) assertEquals(-1, profile.mixRouteValue(output, includeMic = true))
+        assertFalse(profile.supportsMicToggle)
+        assertFalse(profile.supportsCaptureLevel)
+    }
+
+    @Test
     fun `rejects unknown products and vendors`() {
         assertNull(PioneerMixerProfile.find(PioneerMixerProfile.ALPHATHETA_VENDOR_ID, 0xFFFF))
         assertNull(PioneerMixerProfile.find(0x08E4, 0x003C))

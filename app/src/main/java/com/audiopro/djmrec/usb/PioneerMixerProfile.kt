@@ -150,6 +150,20 @@ enum class PioneerMixerProfile(
         vendorCaptureInterface = 0, vendorCaptureAlternateSetting = 1,
         vendorCaptureChannelCount = 8, vendorCaptureSubframeSize = 3,
         vendorCaptureBitResolution = 24, vendorCaptureSampleRates = listOf(48_000)
+    ),
+    // DDJ-FLX10 (2b73:0041), from an on-device descriptor dump (firmware 1.14, 2026-09-22):
+    // class-compliant UAC2. AC if0 with an internal programmable clock (id 1); AS if1/alt1 = 4 ch
+    // OUT (EP 0x01, 84 B) and AS if2/alt1 = 10 ch IN (EP 0x81, 210 B, 24-bit in 3-byte slots,
+    // flagged implicit-feedback for the OUT stream); 44.1 kHz only. Standard descriptors carry the
+    // format, so no vendor-capture override. Like the DDJ-1000 (kernel quirk) it needs the UAC1-style
+    // endpoint SET_CUR rate command and produces audio only while the host streams playback, hence
+    // the silent keepalive. Vendor routing codes are unknown, so no MIX route is written; AUTO locks
+    // the loudest pair. Which pair carries the recording mix is still to be confirmed.
+    DDJ_FLX10(
+        "DDJ-FLX10", setOf(0x0041), 0, 5, RouteReadMode.NONE,
+        List(5) { -1 }, List(5) { -1 },
+        requiresPlaybackTraffic = true, playbackInterface = 1, playbackAlternateSetting = 1,
+        vendorCaptureSampleRates = listOf(44_100)
     );
 
     val hasVendorCaptureOverride: Boolean get() = vendorCaptureInterface >= 0

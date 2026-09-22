@@ -2,6 +2,11 @@
 
 ## v0.43.0 (2026-09-21)
 
+- Add a DDJ-FLX10 profile (2b73:0041) from an on-device descriptor dump: 10-ch 24-bit UAC2
+  capture on if2/alt1, 44.1 kHz fixed, silent 4-ch playback keepalive on if1/alt1 and the endpoint
+  rate command; no vendor routing. Fix the manual keepalive / rate-command / format overrides never
+  reaching the capture engine, and prefer a device's own advertised sample rate over the generic
+  AlphaTheta template.
 - Make the Diagnostics screen reachable (menu drawer). It existed but had no navigation entry,
   so the support report and USB descriptor export could not be opened in any build.
 - Route the *selected* USB pair to MIX/REC OUT on models without a readable route register

@@ -174,11 +174,24 @@ constexpr PioneerMixerProfile kDjmS11Profile{
     14, 3, 10, 3, 24, 48000
 };
 
+// DDJ-FLX10 (2b73:0041): class-compliant UAC2 (descriptor dump 2026-09-22). Capture if2/alt1 EP 0x81
+// 10 ch / 24-bit / 3 B (read from descriptors), playback if1/alt1 EP 0x01 4 ch / 3 B, 44.1 kHz only.
+// The IN endpoint is implicit-feedback for the OUT stream and, like the DDJ-1000 kernel quirk, the
+// device wants the UAC1-style endpoint SET_CUR rate command and playback traffic before it emits
+// audio. No known vendor routing register: every output is -1 (never written).
+constexpr PioneerMixerProfile kDdjFlx10Profile{
+    "DDJ-FLX10", 0x0041, 0x0041, 5, 0,
+    {-1, -1, -1, -1, -1, -1},
+    {-1, -1, -1, -1, -1, -1},
+    PioneerRouteReadMode::None, true, true, 1, 1,
+    4, 3, 0, 0, 0, 44100
+};
+
 inline const PioneerMixerProfile* findPioneerMixerProfile(int vendorId, int productId) {
     if (vendorId != kAlphaThetaVendorId) return nullptr;
     constexpr const PioneerMixerProfile* profiles[] = {
         &kDjmA9Profile, &kDjmV10Profile, &kDjmV5Profile, &kDjm900Nxs2Profile,
-        &kDjm750Mk2Profile, &kDjm450Profile, &kDjmS11Profile
+        &kDjm750Mk2Profile, &kDjm450Profile, &kDjmS11Profile, &kDdjFlx10Profile
     };
     for (const auto* profile : profiles) {
         if (productId >= profile->productIdFirst && productId <= profile->productIdLast) {

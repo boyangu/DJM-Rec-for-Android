@@ -59,6 +59,15 @@ int main() {
     assert(pioneerMixRouteValue(kDjmS11Profile, 0) == -1);
     assert(pioneerMixRouteValue(kDjmS11Profile, -1) == 0x030a);
 
+    // DDJ-FLX10: class-compliant, no vendor routing, duplex keepalive on if1/alt1, 44.1 kHz fixed.
+    assert(findPioneerMixerProfile(kAlphaThetaVendorId, 0x0041) == &kDdjFlx10Profile);
+    assert(pioneerMixRouteValue(kDdjFlx10Profile, -1) == -1);
+    assert(pioneerMixRouteValue(kDdjFlx10Profile, 8) == -1);
+    assert(kDdjFlx10Profile.requiresPlaybackTraffic && kDdjFlx10Profile.usesEndpointSampleRate);
+    assert(kDdjFlx10Profile.playbackInterface == 1 && kDdjFlx10Profile.playbackOutChannels == 4);
+    assert(kDdjFlx10Profile.captureInChannels == 0 && kDdjFlx10Profile.fixedCaptureInSampleRate == 44100);
+    assert(!pioneerSupportsCaptureLevel(kDdjFlx10Profile));
+
     // Lookup by USB ID.
     assert(findPioneerMixerProfile(kAlphaThetaVendorId, 0x003C) == &kDjmA9Profile);
     assert(findPioneerMixerProfile(kAlphaThetaVendorId, 0x0034) == &kDjmV10Profile);

@@ -504,6 +504,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             intent.putExtra(RecordingService.EXTRA_USB_VENDOR_ID, handle.vendorId)
             intent.putExtra(RecordingService.EXTRA_USB_PRODUCT_ID, handle.productId)
             intent.putExtra(RecordingService.EXTRA_USB_RAW_DESCRIPTORS, handle.rawDescriptors)
+            intent.putExtra(RecordingService.EXTRA_USB_PLAYBACK_OVERRIDE, handle.playbackOverride)
+            intent.putExtra(RecordingService.EXTRA_USB_ENDPOINT_RATE_OVERRIDE, handle.endpointRateOverride)
+            intent.putExtra(RecordingService.EXTRA_USB_ALLOW_FORMAT_MISMATCH, handle.allowFormatMismatch)
         } else {
             intent.putExtra(RecordingService.EXTRA_CAPTURE_MODE, RecordingService.CAPTURE_MODE_AAUDIO)
             intent.putExtra(RecordingService.EXTRA_DEVICE_ID, device.audioManagerDeviceId)

@@ -474,9 +474,9 @@ class UsbAudioManager(private val context: Context) {
             subframeSize = bestInterface.subframeSize,
             supportedSampleRates = mixerProfile?.vendorCaptureSampleRates?.takeIf { it.isNotEmpty() }
                 ?: bestInterface.sampleRates.takeIf { it.isNotEmpty() }
+                ?: (clockSampleRates + (routedDeviceId?.second ?: emptyList())).distinct().takeIf { it.isNotEmpty() }
                 ?: GENERIC_ALPHATHETA_RATES.takeIf { formatGuessed || override.hasFormat || override.hasEndpoint }
-                ?: (clockSampleRates +
-                    (routedDeviceId?.second ?: emptyList())).distinct(),
+                ?: emptyList(),
             audioManagerDeviceId = routedDeviceId?.first ?: -1,
             hasPermission = true,
             isPioneer = isPioneerDevice(device),
