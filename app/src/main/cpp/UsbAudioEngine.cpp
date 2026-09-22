@@ -85,7 +85,7 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
     if (result != oboe::Result::OK && mOboeFormat != oboe::AudioFormat::I32) {
         // Some AAudio HAL implementations only expose exclusive-mode UAC2 endpoints as I32
         // even when the wire format is 24-bit (the 4th byte is just the subslot padding
-        // reported in the descriptor) — retry once before giving up.
+        // reported in the descriptor) -- retry once before giving up.
         LOGW("Exclusive open failed for format %d (%s); retrying with I32",
              static_cast<int>(mOboeFormat), oboe::convertToText(result));
         mOboeFormat = oboe::AudioFormat::I32;
@@ -121,7 +121,7 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
     mChannelCount = mFormat.channelCount;
     mOboeFormat = mStream->getFormat();
     // We keep the hardware-reported bit depth (from the USB descriptor) for file headers even
-    // though the wire format might be padded into I32 — this is the *true* fidelity of the source.
+    // though the wire format might be padded into I32 -- this is the *true* fidelity of the source.
     mFormat.bitsPerSample = bitDepthHint;
 
     mAaudioFramesSinceLog = 0;
@@ -298,7 +298,7 @@ oboe::DataCallbackResult UsbAudioEngine::onAudioReady(oboe::AudioStream* /*strea
     applyRecordingGain(canonical.data(), sampleCount, mRecordingGainLinear.load(std::memory_order_relaxed));
 
 
-    // Live stereo metering — always computed, even while paused/stopped, so the UI VU meter
+    // Live stereo metering -- always computed, even while paused/stopped, so the UI VU meter
     // reflects the signal actually present at the mixer's output at all times.
     const StereoMeterReading reading =
         MeterCalculator::analyze(canonical.data(), numFrames, oboe::AudioFormat::I32);
@@ -349,6 +349,17 @@ void UsbAudioEngine::onErrorAfterClose(oboe::AudioStream* /*stream*/, oboe::Resu
     mStreamOpen.store(false, std::memory_order_release);
 }
 
+void UsbAudioEngine::pinCaptureChannelPair() {
+    if (mSourceMode != SourceMode::UsbIso || !mUsbIsoSource) return;
+    if (!mUsbIsoSource->freezeResolvedChannelOffset()) {
+        // Nothing audible has been seen yet, so AUTO has not chosen. Leaving it free means the
+        // file may contain one channel-pair switch when signal first arrives -- but that instant
+        // is a silence-to-music transition anyway, whereas pinning the provisional pair now
+        // could commit the whole recording to the wrong (possibly silent) channels.
+        LOGI("AUTO capture pair not resolved yet at record start; it will lock on first signal");
+    }
+}
+
 bool UsbAudioEngine::startRecording(const std::string& path, ContainerFormat format) {
     std::lock_guard<std::mutex> lock(mControlMutex);
     if (!mStreamOpen.load() || mRecording.load()) return false;
@@ -370,6 +381,7 @@ bool UsbAudioEngine::startRecording(const std::string& path, ContainerFormat for
     mStopRequested.store(false, std::memory_order_relaxed);
     mPaused.store(false, std::memory_order_relaxed);
     mRingBuffer->reset();
+    pinCaptureChannelPair();
     // Keep live history: monitoring is already writing the analyzer on the audio thread.
     mRecording.store(true, std::memory_order_release);
 
@@ -397,6 +409,7 @@ bool UsbAudioEngine::startRecordingFd(int fd, ContainerFormat format) {
     mStopRequested.store(false, std::memory_order_relaxed);
     mPaused.store(false, std::memory_order_relaxed);
     mRingBuffer->reset();
+    pinCaptureChannelPair();
     // Keep live history: monitoring is already writing the analyzer on the audio thread.
     mRecording.store(true, std::memory_order_release);
     mEncoderThread = std::thread(&UsbAudioEngine::encoderThreadLoop, this);
@@ -429,14 +442,32 @@ bool UsbAudioEngine::rollRecordingFd(int fd, ContainerFormat format) {
 }
 
 int64_t UsbAudioEngine::checkpointRecording() {
+    // mControlMutex is held for the whole call, which is what keeps mWriter alive: every path
+    // that can destroy it (startRecording*, rollRecordingFd, stopRecording, closeEngine) takes
+    // this same lock. That lets the expensive fsync() run with mWriterMutex *released*.
     std::lock_guard<std::mutex> controlLock(mControlMutex);
     if (!mRecording.load()) return -1;
-    std::lock_guard<std::mutex> writerLock(mWriterMutex);
-    if (!mWriter || !mWriter->checkpoint()) {
+
+    int64_t partBytes = -1;
+    {
+        std::lock_guard<std::mutex> writerLock(mWriterMutex);
+        if (!mWriter || !mWriter->flushRecoverable()) {
+            mRecordingErrorCode.store(2, std::memory_order_release);
+            return -1;
+        }
+        partBytes = static_cast<int64_t>(mWriter->bytesWritten());
+    }
+
+    // fsync() on a MediaStore descriptor goes through FUSE and regularly costs 50-300 ms. This
+    // used to run under mWriterMutex, blocking encoderThreadLoop for that whole time while the
+    // capture callback kept filling the ring at the wire rate; every checkpoint interval the
+    // ring overran and the dropped frames were audible as a periodic click. Same shape as
+    // rollRecordingFd(), which already does its slow close() outside the writer lock.
+    if (!mWriter->syncToDisk()) {
         mRecordingErrorCode.store(2, std::memory_order_release);
         return -1;
     }
-    return static_cast<int64_t>(mWriter->bytesWritten());
+    return partBytes;
 }
 
 int32_t UsbAudioEngine::getRecordingErrorCode() const {

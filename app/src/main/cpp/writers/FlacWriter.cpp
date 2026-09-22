@@ -130,10 +130,16 @@ bool FlacWriter::close() {
     return ok;
 }
 
-bool FlacWriter::checkpoint() {
+bool FlacWriter::flushRecoverable() {
     if (!mEncoder) return false;
     if (!mFile) return true; // Path-based libFLAC I/O has no exposed FILE handle.
-    return fflush(mFile) == 0 && fsync(fileno(mFile)) == 0;
+    return fflush(mFile) == 0;
+}
+
+bool FlacWriter::syncToDisk() {
+    if (!mEncoder) return false;
+    if (!mFile) return true;
+    return fsync(fileno(mFile)) == 0;
 }
 
 uint64_t FlacWriter::bytesWritten() const {

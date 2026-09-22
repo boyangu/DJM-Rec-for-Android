@@ -32,6 +32,15 @@ djmrec_add_test(MeterCalculatorTest)
 # MeterCalculator.h takes an oboe::AudioFormat to select its decode loop. host_stubs supplies
 # just that enum so the metering maths is testable off-device without the NDK.
 target_include_directories(MeterCalculatorTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs")
+# WavWriter.cpp calls fsync()/unistd.h, so it only builds on a POSIX host. CI runs ubuntu; a
+# Windows checkout simply gets one fewer test rather than a configure failure.
+if(NOT MSVC)
+    djmrec_add_test(WavCheckpointTest)
+    target_sources(WavCheckpointTest PRIVATE "${DJMREC_NATIVE_SRC}/writers/WavWriter.cpp")
+    # host_stubs/android/log.h stands in for the NDK logging header the writer pulls in.
+    target_include_directories(WavCheckpointTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs")
+endif()
+
 # WaveformAnalyzer.cpp is the only non-header dependency.
 target_sources(AudioSignalTest PRIVATE "${DJMREC_NATIVE_SRC}/WaveformAnalyzer.cpp")
 target_sources(WaveformSnapshotTest PRIVATE "${DJMREC_NATIVE_SRC}/WaveformAnalyzer.cpp")

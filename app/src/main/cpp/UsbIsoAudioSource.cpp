@@ -336,6 +336,7 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     mSetupRouteSetResult = -999;
     mSetupRouteValue = -1;
     mResolvedChannelOffset = config.extractChannelOffset;
+    mChannelOffsetFrozen.store(false, std::memory_order_relaxed);
     mFramesSincePeakLog = 0;
     mLoggedPayloadWindow = false;
     mLoggedPayloadSignal = false;
@@ -846,6 +847,7 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
             // is a synchronous control transfer -- so give up and let the Kotlin side reopen).
             mPacketsMissed.fetch_add(static_cast<uint64_t>(transfer->num_iso_packets),
                                      std::memory_order_relaxed);
+            mCarryover.clear(); // See the per-packet miss path below for why.
             if (++mConsecutiveTransferErrors >= kMaxConsecutiveTransferErrors) {
                 LOGE("USB capture transfer failed %d times in a row (last status %d)",
                      mConsecutiveTransferErrors, transfer->status);
@@ -863,6 +865,14 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
         const libusb_iso_packet_descriptor& packet = transfer->iso_packet_desc[i];
         if (packet.status != LIBUSB_TRANSFER_COMPLETED) {
             mPacketsMissed.fetch_add(1, std::memory_order_relaxed);
+            // Bytes held back from before the gap can no longer be completed by the bytes that
+            // follow it: splicing the two halves together fabricates one frame of half-old,
+            // half-new data, which decodes to a full-scale garbage sample rather than the much
+            // quieter step the gap alone produces. Drop the stale remainder instead. (Devices
+            // whose frame size divides the packet size evenly -- the FLX10's 30-byte frames into
+            // 150/180-byte packets, for one -- never carry anything over, so this is a no-op
+            // there and matters only on 4-byte-subslot models.)
+            mCarryover.clear();
             continue;
         }
         mPacketsCompleted.fetch_add(1, std::memory_order_relaxed);
@@ -1256,7 +1266,8 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
 
                 constexpr uint32_t kAudibleThreshold = 1u << 20;
                 const int currentOffset = mResolvedChannelOffset.load(std::memory_order_relaxed);
-                if (currentOffset < 0 && bestMagnitude >= kAudibleThreshold) {
+                if (currentOffset < 0 && bestMagnitude >= kAudibleThreshold &&
+                    !mChannelOffsetFrozen.load(std::memory_order_acquire)) {
                     mResolvedChannelOffset.store(bestOffset, std::memory_order_relaxed);
                     LOGI("Locked AUTO capture to USB channels %d-%d for this session",
                          bestOffset + 1, bestOffset + 2);

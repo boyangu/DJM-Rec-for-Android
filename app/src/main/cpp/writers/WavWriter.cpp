@@ -162,9 +162,12 @@ bool WavWriter::patchHeaderSizes() {
     return fseek(mFile, 0, SEEK_END) == 0;
 }
 
-bool WavWriter::checkpoint() {
-    if (!mFile || !patchHeaderSizes()) return false;
-    return fsync(fileno(mFile)) == 0;
+bool WavWriter::flushRecoverable() {
+    return mFile && patchHeaderSizes();
+}
+
+bool WavWriter::syncToDisk() {
+    return mFile && fsync(fileno(mFile)) == 0;
 }
 
 bool WavWriter::close() {

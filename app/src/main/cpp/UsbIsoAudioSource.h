@@ -130,6 +130,24 @@ public:
      */
     bool takeRouteFallbackRequest() { return mRouteFallbackRequested.exchange(false, std::memory_order_acq_rel); }
 
+    /**
+     * Pins the AUTO channel-pair choice for the rest of the capture, so a recording cannot
+     * change which USB channels it is reading from part-way through the file.
+     *
+     * In AUTO the pair is only decided after a full one-second window contains audible signal;
+     * until then the stream is demuxed from channels 1-2. Capture goes live well before that,
+     * so without this a recording started immediately after open would begin on 1-2 and hard-cut
+     * to the locked pair a moment later -- not a dropped sample but a change of *content*, which
+     * is the loudest kind of click. Returns false if the pair has not been decided yet; the
+     * caller should leave AUTO free in that case, because a late correct switch beats a file
+     * permanently stuck on the wrong pair.
+     */
+    bool freezeResolvedChannelOffset() {
+        if (mResolvedChannelOffset.load(std::memory_order_relaxed) < 0) return false;
+        mChannelOffsetFrozen.store(true, std::memory_order_release);
+        return true;
+    }
+
 private:
     void eventThreadLoop();
     void handleCompletedTransfer(libusb_transfer* transfer);
@@ -149,7 +167,14 @@ private:
 
     const char* profileName() const { return mMixerProfile ? mMixerProfile->name : "manual"; }
 
-    static constexpr int kNumTransfers = 8;
+    // Depth of the URB queue the kernel services while we are busy. A transfer is re-armed only
+    // after all of its packets have been demuxed, so the queue is the entire margin against the
+    // event thread being descheduled: run out of queued URBs and the controller simply stops
+    // collecting those microframes. That loss is invisible -- the packets never existed, so no
+    // counter sees them -- and the timeline closes up over the hole, which is a click. At
+    // bInterval=1 (8000 microframes/s) 24 x 16 packets is ~48 ms of tolerance for ~80 KB of
+    // buffers. Latency is irrelevant here: this is a recorder, not a monitor path.
+    static constexpr int kNumTransfers = 24;
     static constexpr int kPacketsPerTransfer = 16;
     // Whole-URB error statuses tolerated before the transport is declared dead.
     static constexpr int kMaxConsecutiveTransferErrors = 8;
@@ -214,6 +239,7 @@ private:
     ChannelActivity mChannelActivity;
     int mActivityPacketCounter = 0;
     std::atomic<int> mResolvedChannelOffset{-1};
+    std::atomic<bool> mChannelOffsetFrozen{false};
     size_t mFramesSincePeakLog = 0;
     bool mLoggedPayloadWindow = false;
     bool mLoggedPayloadSignal = false;

@@ -106,6 +106,8 @@ private:
     UsbAudioEngine() = default;
 
     void encoderThreadLoop();
+    /** Pins an AUTO channel-pair pick so it cannot change mid-file. Call with mControlMutex held. */
+    void pinCaptureChannelPair();
     static size_t bytesPerFrameFor(oboe::AudioFormat format, int32_t channelCount);
 
     /** Shared tail of both capture paths once a canonical stereo I32 frame batch is in hand:

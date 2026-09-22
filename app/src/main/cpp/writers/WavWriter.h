@@ -19,7 +19,8 @@ public:
     bool openFd(int fd, const AudioFormatInfo& format) override;
     bool writeFrames(const int32_t* interleaved, size_t frameCount) override;
     bool close() override;
-    bool checkpoint() override;
+    bool flushRecoverable() override;
+    bool syncToDisk() override;
     uint64_t bytesWritten() const override { return mDataBytesWritten; }
 
 private:

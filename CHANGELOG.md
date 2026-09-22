@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.46.0 (2026-09-22)
+
+- Fix periodic clicks cut into recorded files. Every 5 s the recording checkpoint patched the
+  WAV header and then called `fsync()` while still holding the writer lock, so the encoder thread
+  was blocked for the whole flush. On a MediaStore descriptor that goes through FUSE and
+  routinely costs 50-300 ms, during which capture kept filling the ring at the wire rate; when it
+  overran, the dropped frames left a step in the waveform on exactly the checkpoint interval. The
+  header patch still runs under the lock, but the flush to storage now runs outside it, the same
+  way rolling to a new file part has always worked.
+- Deepen the USB capture queue from 8 to 24 transfers (~16 ms to ~48 ms). A transfer is only
+  re-armed after all of its packets have been decoded, so the queue is the entire margin against
+  the capture thread being descheduled. Running out of queued transfers loses microframes that no
+  counter can see -- the packets never reach the host at all -- and the recording silently closes
+  up over the hole. Costs about 80 KB of buffers; capture latency does not matter to a recorder.
+- Stop the AUTO channel pair from changing part-way through a recording. AUTO only picks a pair
+  once a full second of audible signal has arrived, but capture goes live before that and reads
+  channels 1-2 in the meantime, so a recording started immediately after connecting could begin
+  on one pair and hard-cut to another a moment later -- a change of content, which is the most
+  audible kind of click. The pick is now pinned when recording starts. If nothing audible has
+  been seen yet it is left free, because a late correction beats a whole file on the wrong pair.
+- Discard the partial frame held over from a packet that was lost in transit. Splicing the bytes
+  either side of a gap fabricates one frame of half-old, half-new data, which decodes to a
+  full-scale sample -- far louder than the gap itself. (No effect on the DDJ-FLX10, whose 30-byte
+  frames divide its packets evenly so nothing is ever held over; it matters on 4-byte-subslot
+  models.)
+- Add `scripts/find_clicks.py`, which locates discontinuities in a recorded WAV and reports how
+  far apart they are, so a periodic fault can be told from random packet loss.
+
 ## v0.45.2 (2026-09-22)
 
 - Lock the app to portrait. It no longer rotates to landscape when the phone is tilted, which
