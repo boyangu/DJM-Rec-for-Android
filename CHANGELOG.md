@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.45.2 (2026-09-22)
+
+- Lock the app to portrait. It no longer rotates to landscape when the phone is tilted, which
+  was easy to trigger while reaching for a mixer mid-set. The wide side-by-side layout is kept
+  because Android ignores the orientation lock in multi-window, where the window can still be
+  wider than it is tall.
+
 ## v0.45.1 (2026-09-22)
 
 - Fix the L/R meters never showing amber or red. Two faults compounded: segment colour was taken

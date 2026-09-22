@@ -180,6 +180,9 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
         }
     }
     BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        // The activity is locked to portrait, so this wide branch never fires from a rotation.
+        // It is still reachable: Android ignores android:screenOrientation in multi-window, so a
+        // split-screen or foldable window can be wider than it is tall.
         if (maxWidth >= 600.dp && maxWidth > maxHeight) {
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1.2f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
