@@ -49,8 +49,10 @@ class SignalDetector(
             signalPresent = true
             return true
         }
-        // A hold of 0 means "no hold at all"; otherwise stay latched until the window elapses.
-        signalPresent = signalPresent && lastSignalAtMs != 0L && nowMs - lastSignalAtMs < holdMs
+        // signalPresent starts false and is only ever set true by the branch above, so it
+        // already encodes "have we ever heard anything". No separate sentinel is needed, and a
+        // timestamp of 0 is perfectly legitimate so it must never be used as one.
+        signalPresent = signalPresent && nowMs - lastSignalAtMs < holdMs
         return signalPresent
     }
 

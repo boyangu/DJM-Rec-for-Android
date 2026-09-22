@@ -35,6 +35,9 @@ internal class MeterBallistics(
     var rmsDb: Float = floorDb
         private set
 
+    // Explicit flag rather than `lastFrameNanos == 0L`: a frame time of 0 is legitimate,
+    // and treating it as "unset" made every later frame re-seed instead of decaying.
+    private var started = false
     private var lastFrameNanos = 0L
     private var holdUntilNanos = 0L
 
@@ -46,7 +49,8 @@ internal class MeterBallistics(
      */
     fun update(frameNanos: Long, targetPeakDb: Float, targetRmsDb: Float) {
         // First frame (or after a reset) establishes the time base without decaying anything.
-        if (lastFrameNanos == 0L) {
+        if (!started) {
+            started = true
             lastFrameNanos = frameNanos
             peakDb = targetPeakDb
             rmsDb = targetRmsDb
@@ -83,6 +87,7 @@ internal class MeterBallistics(
         peakDb = floorDb
         peakHoldDb = floorDb
         rmsDb = floorDb
+        started = false
         lastFrameNanos = 0L
         holdUntilNanos = 0L
     }
