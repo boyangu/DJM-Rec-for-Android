@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -61,7 +62,9 @@ private enum class Destination(val label: String, val icon: ImageVector) {
     RECORDING("Recording", Icons.Filled.FiberManualRecord),
     LIVE("Go Live", Icons.Filled.LiveTv),
     RECORDINGS("My Recordings", Icons.Filled.LibraryMusic),
-    SETTINGS("Settings", Icons.Filled.Settings)
+    SETTINGS("Settings", Icons.Filled.Settings),
+    /** Drawer-only: support report, USB descriptor export. Not in the bottom bar. */
+    DIAGNOSTICS("Diagnostics", Icons.Filled.BugReport)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -242,6 +245,7 @@ fun MainScreen(viewModel: MainViewModel) {
                     Destination.LIVE -> LiveStreamScreen(viewModel = viewModel)
                     Destination.RECORDINGS -> LibraryScreen(onBack = null)
                     Destination.SETTINGS -> SettingsScreen(viewModel = viewModel)
+                    Destination.DIAGNOSTICS -> DiagnosticsScreen()
                 }
                 }
             }

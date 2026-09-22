@@ -2,6 +2,8 @@
 
 ## v0.43.0 (2026-09-21)
 
+- Make the Diagnostics screen reachable (menu drawer). It existed but had no navigation entry,
+  so the support report and USB descriptor export could not be opened in any build.
 - Route the *selected* USB pair to MIX/REC OUT on models without a readable route register
   (DJM-V10, DJM-S11, DJM-450 unchanged): picking USB 5/6 on a V10 now records MIX on USB 5/6.
 - Correct Pioneer route source tables against the Linux `snd-usb-audio` DJM quirks: 0x0a is

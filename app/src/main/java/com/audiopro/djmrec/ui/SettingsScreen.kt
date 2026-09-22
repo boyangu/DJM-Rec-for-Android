@@ -129,6 +129,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
         PreferenceSwitch("Automatic diagnostics", "Send bounded mixer connection and recording-health events to Firebase Analytics, plus non-fatal errors and crashes to Crashlytics. No recorded audio or filenames. Enabled by default in production builds.",
             diagnostics, com.audiopro.djmrec.diagnostics.RemoteDiagnostics::setEnabled)
         Text(diagnosticsStatus, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+        Text("Support reports and the USB descriptor export are under Diagnostics in the menu drawer (top-left).", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         Text("Display", style = MaterialTheme.typography.titleLarge)
         PreferenceSwitch("Live waveform", "RGB: red bass, green mids, blue highs. Mixed frequencies blend colors.", waveform, viewModel::setWaveformEnabled)
         PreferenceSwitch("Smooth waveform", "Scroll at the display frame rate. Turn off to reduce graphics work.", smooth, viewModel::setSmoothWaveform)
