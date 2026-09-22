@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.45.1 (2026-09-22)
+
+- Fix the L/R meters never showing amber or red. Two faults compounded: segment colour was taken
+  from each block's left edge, so the topmost block was evaluated at 59/60 and a fraction of
+  exactly 1.0 never occurred, making red unreachable at any level; and the thresholds were peak
+  values (-6 and 0 dBFS) applied to a bar whose length follows RMS, which for real programme
+  material sits near -18 dBFS. Zones are now -20 dBFS for amber and -9 dBFS for red.
+- Fix the whole meter jumping whenever the dB readout changed. The readout box left only 22dp of
+  content width, so "-60" wrapped onto a second line and re-measured the row. It is now a fixed
+  30dp, single line, no wrap, right aligned, with tabular figures so every value is the same
+  width. It also shows the held peak instead of the instantaneous one, which crossed several
+  integers a second and was unreadable.
+
 ## v0.45.0 (2026-09-22)
 
 - Fix the input status flickering between "INPUT LIVE" and "ARMED / NO SIGNAL" several times a

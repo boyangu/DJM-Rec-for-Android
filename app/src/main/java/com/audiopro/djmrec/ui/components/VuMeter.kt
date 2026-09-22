@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
 import com.audiopro.djmrec.audio.ChannelLevel
 import com.audiopro.djmrec.audio.StereoLevels
@@ -44,19 +45,29 @@ import com.audiopro.djmrec.ui.theme.MeterRed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
-private const val METER_FLOOR_DB = -60f
+/** Number of lit blocks across the bar; also the granularity of the colour zones. */
+internal const val METER_SEGMENT_COUNT = 60
+
+internal const val METER_FLOOR_DB = -60f
 // 0 dBFS, not +3: the native meter clamps to 0 (MeterCalculator.h amplitudeToDb), so a
 // higher ceiling left the red zone permanently unreachable.
-private const val METER_CEILING_DB = 0f
+internal const val METER_CEILING_DB = 0f
 private const val CLIP_LATCH_MS = 1500L
 
-private fun dbToFraction(db: Float): Float =
+internal fun dbToFraction(db: Float): Float =
     ((db - METER_FLOOR_DB) / (METER_CEILING_DB - METER_FLOOR_DB)).coerceIn(0f, 1f)
 
-private fun colorForFraction(fraction: Float): Color = when {
-    fraction >= dbToFraction(0f)  -> MeterRed
-    fraction >= dbToFraction(-6f) -> MeterAmber
-    else                           -> MeterGreen
+// The bar length follows RMS, not peak, so these are RMS thresholds. Programme material sits
+// around -18 to -12 dBFS RMS, so the old peak-oriented -6/0 dB zones meant the bar was green
+// essentially always: amber needed a level most music never reaches and red was unreachable
+// outright (see drawHorizontalMeterFill for the other half of that bug).
+internal const val METER_AMBER_DB = -20f
+internal const val METER_RED_DB = -9f
+
+internal fun colorForFraction(fraction: Float): Color = when {
+    fraction >= dbToFraction(METER_RED_DB)   -> MeterRed
+    fraction >= dbToFraction(METER_AMBER_DB) -> MeterAmber
+    else                                      -> MeterGreen
 }
 
 /**
@@ -133,7 +144,10 @@ private fun HorizontalChannelMeter(label: String, level: ChannelLevel, active: B
     // The bars are read inside the draw lambdas below, not here, so a new frame only re-runs the
     // draw phase. The numeric readout goes through derivedStateOf so it recomposes when the
     // displayed integer changes rather than on all 60 frames a second.
-    val readoutDb by remember { derivedStateOf { peakDb.floatValue.toInt() } }
+    //
+    // It shows the *held* peak rather than the instantaneous one: the raw value crosses several
+    // integers a second, which made the number an unreadable blur. This matches the white marker.
+    val readoutDb by remember { derivedStateOf { peakHoldDb.floatValue.toInt() } }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -174,12 +188,18 @@ private fun HorizontalChannelMeter(label: String, level: ChannelLevel, active: B
             }
         }
 
-        // Peak dB readout
+        // Peak dB readout. Everything here exists to stop the row re-measuring as the number
+        // changes: the old box left only 22dp of content width, so "-60" wrapped onto a second
+        // line and the whole meter jumped. Fixed width outside the padding, one line, no wrap,
+        // and tabular figures so "-11" and "-60" are exactly the same width.
         Text(
             text = "$readoutDb",
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(28.dp).padding(start = 6.dp)
+            maxLines = 1,
+            softWrap = false,
+            textAlign = TextAlign.End,
+            modifier = Modifier.padding(start = 6.dp).width(30.dp)
         )
     }
 }
@@ -222,16 +242,24 @@ private fun DrawScope.drawHorizontalMeterTrack() {
     )
 }
 
+/**
+ * Position used to colour segment [index]: its right edge, not its left.
+ *
+ * With the left edge the topmost segment evaluated at 59/60 = 0.983, so a fraction of exactly
+ * 1.0 was never tested and the red zone could never light no matter how hot the input.
+ */
+internal fun meterSegmentFraction(index: Int): Float = (index + 1f) / METER_SEGMENT_COUNT
+
 private fun DrawScope.drawHorizontalMeterFill(fraction: Float) {
     val fillWidth = size.width * fraction
-    val segmentCount = 60
+    val segmentCount = METER_SEGMENT_COUNT
     val segmentWidth = size.width / segmentCount
     val gapRatio = 0.15f
 
     for (i in 0 until segmentCount) {
         val segLeft = i * segmentWidth
         if (segLeft >= fillWidth) break
-        val segFraction = segLeft / size.width
+        val segFraction = meterSegmentFraction(i)
         val color = colorForFraction(segFraction)
         drawRect(
             color = color,
