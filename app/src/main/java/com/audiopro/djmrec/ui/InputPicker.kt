@@ -25,8 +25,7 @@ fun InputPicker(viewModel: MainViewModel, onDismiss: () -> Unit) {
     val notice by viewModel.connectionNotice.collectAsState()
     val state by viewModel.recordingState.collectAsState()
     val saving by viewModel.saving.collectAsState()
-    val live by viewModel.liveStreamState.collectAsState()
-    val locked = saving || live.isActive || state is RecordingState.Recording ||
+    val locked = saving || state is RecordingState.Recording ||
         state is RecordingState.Paused || state is RecordingState.Preparing
     LaunchedEffect(Unit) { viewModel.rescanUsbDevices() }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
@@ -37,7 +36,7 @@ fun InputPicker(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     Text("Audio inputs", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
                     IconButton(onClick = viewModel::refreshInputs) { Icon(Icons.Default.Refresh, "Refresh USB devices") }
                 }
-                Text(if (locked) "Input stays locked while recording, connecting or streaming."
+                Text(if (locked) "Input stays locked while recording or connecting."
                     else "Choose your mixer or audio interface. USB permission may be requested.",
                     style = MaterialTheme.typography.bodyMedium)
             }

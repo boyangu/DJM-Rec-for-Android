@@ -337,8 +337,6 @@ object RemoteDiagnostics {
         "RecordingSaved" -> "recording_saved"
         "Recovery" -> "recovery_detected"
         "RecordingState" -> "recording_state"
-        "Streaming" -> "streaming_state"
-        "StreamingAudio" -> "streaming_audio"
         else -> "diagnostic_event"
     }
 

@@ -138,7 +138,7 @@ fun DiagnosticsScreen() {
                         val info = device ?: return@OutlinedButton
                         val text = describeDescriptors(info)
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("DJM Rec USB descriptors", text))
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Set Recorder USB descriptors", text))
                         Toast.makeText(context, "USB descriptors copied to clipboard", Toast.LENGTH_SHORT).show()
                     }
                 ) { Text("Copy USB descriptors") }
@@ -151,7 +151,7 @@ private fun hex4(value: Int) = "0x" + value.and(0xFFFF).toString(16).padStart(4,
 
 /** Human-readable + hex dump of the published device's descriptors (no serial numbers involved). */
 private fun describeDescriptors(info: UsbAudioDeviceInfo): String = buildString {
-    appendLine("DJM Rec USB descriptor dump")
+    appendLine("Set Recorder USB descriptor dump")
     appendLine("product: ${info.productName}")
     appendLine("usb id: ${hex4(info.vendorId)}:${hex4(info.productId)}")
     appendLine("profile: ${info.profileDescription}")

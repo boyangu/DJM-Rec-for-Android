@@ -61,7 +61,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
         val update = installRequest ?: return@LaunchedEffect
         updateBusy = true
         updateError = false
-        updateStatus = "Downloading DJM REC ${update.version}..."
+        updateStatus = "Downloading Set Recorder ${update.version}..."
         runCatching { UpdateInstaller.download(context.applicationContext, update) }
             .onSuccess { apk ->
                 updateStatus = "Download verified. Opening Android installer..."
@@ -87,11 +87,11 @@ fun SettingsScreen(viewModel: MainViewModel) {
             when (val result = UpdateChecker.checkNow(context.applicationContext)) {
                 is UpdateCheckResult.Available -> {
                     availableUpdate = result.update
-                    updateStatus = "DJM REC ${result.update.version} is available."
+                    updateStatus = "Set Recorder ${result.update.version} is available."
                 }
                 UpdateCheckResult.Current -> {
                     availableUpdate = null
-                    updateStatus = "DJM REC is up to date."
+                    updateStatus = "Set Recorder is up to date."
                 }
                 is UpdateCheckResult.Failed -> {
                     updateError = true
@@ -107,7 +107,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
             installRequest = update
         } else {
             pendingPermissionUpdate = update
-            updateStatus = "Allow DJM REC to install updates, then return here."
+            updateStatus = "Allow Set Recorder to install updates, then return here."
             unknownSourcesPermission.launch(
                 Intent(
                     Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -140,7 +140,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
         val batteryExemptionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { batteryExempt = powerManager.isIgnoringBatteryOptimizations(context.packageName) }
-        Text("Keep the persistent notification enabled. Android's battery optimization is the most common reason a long set stops in the background; exempt DJM REC once so a 2-hour recording survives with the screen off. Force-stop, reboot or disconnecting USB still ends capture.", color = TextSecondary)
+        Text("Keep the persistent notification enabled. Android's battery optimization is the most common reason a long set stops in the background; exempt Set Recorder once so a 2-hour recording survives with the screen off. Force-stop, reboot or disconnecting USB still ends capture.", color = TextSecondary)
         if (batteryExempt) {
             Text("Battery optimization: unrestricted (recommended)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         } else {
@@ -157,7 +157,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
         Surface(shape = RoundedCornerShape(20.dp), tonalElevation = 1.dp) {
             Column(Modifier.fillMaxWidth().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("DJM REC", style = MaterialTheme.typography.titleMedium)
+                Text("Set Recorder", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Installed version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                     style = MaterialTheme.typography.bodyMedium,

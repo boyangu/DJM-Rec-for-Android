@@ -133,7 +133,6 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
     const size_t canonicalBytesPerFrame = bytesPerFrameFor(oboe::AudioFormat::I32, mFormat.channelCount);
     const size_t ringBufferFrames = static_cast<size_t>(mFormat.sampleRate) * 2; // 2s of headroom
     mRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * canonicalBytesPerFrame);
-    mLiveRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * 2 * sizeof(int32_t));
     mWaveformAnalyzer = std::make_unique<WaveformAnalyzer>(mFormat.sampleRate);
 
     result = mStream->requestStart();
@@ -206,7 +205,6 @@ int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32
     const size_t canonicalBytesPerFrame = bytesPerFrameFor(oboe::AudioFormat::I32, 2);
     const size_t ringBufferFrames = static_cast<size_t>(mFormat.sampleRate) * 2;
     mRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * canonicalBytesPerFrame);
-    mLiveRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * 2 * sizeof(int32_t));
     mWaveformAnalyzer = std::make_unique<WaveformAnalyzer>(mFormat.sampleRate);
 
     mStreamOpen.store(true, std::memory_order_release);
@@ -240,8 +238,6 @@ void UsbAudioEngine::onUsbIsoFrames(const int32_t* interleavedStereo, size_t fra
     if (mWaveformEnabled.load(std::memory_order_relaxed) && mWaveformAnalyzer) {
         mWaveformAnalyzer->pushFrames(processedStereo, frameCount);
     }
-    writeLiveFrames(processedStereo, frameCount, 2);
-
     if (mRecording.load(std::memory_order_relaxed) &&
         !mPaused.load(std::memory_order_relaxed) &&
         mRingBuffer) {
@@ -305,7 +301,6 @@ oboe::DataCallbackResult UsbAudioEngine::onAudioReady(oboe::AudioStream* /*strea
 
     applyRecordingGain(canonical.data(), sampleCount, mRecordingGainLinear.load(std::memory_order_relaxed));
 
-    writeLiveFrames(canonical.data(), static_cast<size_t>(numFrames), mChannelCount);
 
     // Live stereo metering — always computed, even while paused/stopped, so the UI VU meter
     // reflects the signal actually present at the mixer's output at all times.
@@ -473,78 +468,6 @@ bool UsbAudioEngine::takeRouteFallbackRequest() {
     return mUsbIsoSource && mUsbIsoSource->takeRouteFallbackRequest();
 }
 
-void UsbAudioEngine::writeLiveFrames(
-    const int32_t* interleaved, size_t frameCount, int32_t channelCount) {
-    if (!mLivePcmActive.load(std::memory_order_relaxed) || !mLiveRingBuffer ||
-        !interleaved || frameCount == 0 || channelCount < 1) return;
-
-    const int32_t* stereo = interleaved;
-    static thread_local std::vector<int32_t> stereoScratch;
-    if (channelCount != 2) {
-        const size_t samples = frameCount * 2;
-        if (stereoScratch.size() < samples) stereoScratch.resize(samples);
-        for (size_t frame = 0; frame < frameCount; ++frame) {
-            stereoScratch[frame * 2] = interleaved[frame * channelCount];
-            stereoScratch[frame * 2 + 1] = channelCount > 1
-                ? interleaved[frame * channelCount + 1]
-                : interleaved[frame * channelCount];
-        }
-        stereo = stereoScratch.data();
-    }
-
-    const size_t bytes = frameCount * 2 * sizeof(int32_t);
-    const size_t written = mLiveRingBuffer->write(
-        reinterpret_cast<const uint8_t*>(stereo), bytes);
-    if (written < bytes) {
-        mLiveDroppedFrames.fetch_add((bytes - written) / (2 * sizeof(int32_t)),
-                                     std::memory_order_relaxed);
-    }
-}
-
-bool UsbAudioEngine::startLivePcm() {
-    std::lock_guard<std::mutex> lock(mControlMutex);
-    if (!mStreamOpen.load() || !mLiveRingBuffer || mFormat.sampleRate <= 0) return false;
-    mLiveDroppedFrames.store(0, std::memory_order_relaxed);
-    mLivePcmFramesRead.store(0, std::memory_order_relaxed);
-    mLivePcmNonZeroSamples.store(0, std::memory_order_relaxed);
-    mLivePcmActive.store(true, std::memory_order_release);
-    return true;
-}
-
-void UsbAudioEngine::stopLivePcm() {
-    mLivePcmActive.store(false, std::memory_order_release);
-}
-
-size_t UsbAudioEngine::readLivePcm16(uint8_t* output, size_t maxBytes) {
-    // mLiveRingBuffer is reset by openUsbIso()/closeEngine() under mControlMutex; hold it here
-    // too so the streaming reader can never race a teardown (previously a use-after-free window).
-    std::lock_guard<std::mutex> lock(mControlMutex);
-    if (!mLivePcmActive.load(std::memory_order_acquire) || !mLiveRingBuffer || !output) return 0;
-    const size_t maxFrames = maxBytes / (2 * sizeof(int16_t));
-    const size_t availableFrames = mLiveRingBuffer->availableToRead() / (2 * sizeof(int32_t));
-    // MediaCodec AAC is most reliable with full, stable PCM blocks. Waiting for the requested
-    // block also avoids submitting hundreds of tiny USB-packet-sized frames each second.
-    if (maxFrames == 0 || availableFrames < maxFrames) return 0;
-    const size_t frames = maxFrames;
-
-    const size_t inputSamples = frames * 2;
-    static thread_local std::vector<int32_t> input;
-    if (input.size() < inputSamples) input.resize(inputSamples);
-    const size_t inputBytes = inputSamples * sizeof(int32_t);
-    const size_t read = mLiveRingBuffer->read(reinterpret_cast<uint8_t*>(input.data()), inputBytes);
-    const size_t samplesRead = read / sizeof(int32_t);
-    uint64_t nonZeroSamples = 0;
-    for (size_t index = 0; index < samplesRead; ++index) {
-        const int16_t sample = static_cast<int16_t>(input[index] >> 16);
-        if (sample != 0) ++nonZeroSamples;
-        output[index * 2] = static_cast<uint8_t>(sample & 0xFF);
-        output[index * 2 + 1] = static_cast<uint8_t>((sample >> 8) & 0xFF);
-    }
-    mLivePcmFramesRead.fetch_add(samplesRead / 2, std::memory_order_relaxed);
-    mLivePcmNonZeroSamples.fetch_add(nonZeroSamples, std::memory_order_relaxed);
-    return samplesRead * sizeof(int16_t);
-}
-
 void UsbAudioEngine::pauseRecording() {
     mPaused.store(true, std::memory_order_release);
 }
@@ -580,7 +503,6 @@ int64_t UsbAudioEngine::stopRecording() {
 }
 
 void UsbAudioEngine::closeEngine() {
-    stopLivePcm();
     if (mRecording.load()) {
         stopRecording();
     }
@@ -596,7 +518,6 @@ void UsbAudioEngine::closeEngine() {
         mUsbIsoSource.reset();
     }
     mRingBuffer.reset();
-    mLiveRingBuffer.reset();
     mSourceMode = SourceMode::None;
     mStreamOpen.store(false, std::memory_order_release);
 }
@@ -697,10 +618,6 @@ std::string UsbAudioEngine::getDiagnosticSummary() {
         << "ch/" << mFormat.bitsPerSample << "bit\n"
         << "xrun_count=" << mXRunCount.load(std::memory_order_relaxed) << '\n'
         << "recording_error_code=" << mRecordingErrorCode.load(std::memory_order_relaxed) << '\n'
-        << "live_pcm_active=" << (mLivePcmActive.load(std::memory_order_relaxed) ? "true" : "false") << '\n'
-        << "live_pcm_dropped_frames=" << mLiveDroppedFrames.load(std::memory_order_relaxed) << '\n'
-        << "live_pcm_frames_read=" << mLivePcmFramesRead.load(std::memory_order_relaxed) << '\n'
-        << "live_pcm_nonzero_samples=" << mLivePcmNonZeroSamples.load(std::memory_order_relaxed) << '\n'
         << "elapsed_ms=" << mElapsedMillis.load(std::memory_order_relaxed) << '\n'
         << "levels_db=peak_l:" << mLeftPeakDb.load(std::memory_order_relaxed)
         << " rms_l:" << mLeftRmsDb.load(std::memory_order_relaxed)

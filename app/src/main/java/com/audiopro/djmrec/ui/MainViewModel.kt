@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import android.util.Log
-import android.view.SurfaceView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,18 +20,6 @@ import com.audiopro.djmrec.audio.RecordingHealth
 import com.audiopro.djmrec.audio.RecordingState
 import com.audiopro.djmrec.audio.StereoLevels
 import com.audiopro.djmrec.service.RecordingService
-import com.audiopro.djmrec.streaming.LiveStreamConfig
-import com.audiopro.djmrec.streaming.LiveStreamState
-import com.audiopro.djmrec.streaming.LiveStreamStatus
-import com.audiopro.djmrec.streaming.LivePlatform
-import com.audiopro.djmrec.streaming.StreamSetupState
-import com.audiopro.djmrec.streaming.StreamSetupStatus
-import com.audiopro.djmrec.streaming.StreamingSetupRepository
-import com.audiopro.djmrec.streaming.YouTubePrivacy
-import com.audiopro.djmrec.streaming.YouTubeBroadcastState
-import com.audiopro.djmrec.streaming.YouTubeBroadcastStatus
-import com.audiopro.djmrec.streaming.YouTubeFinishResult
-import com.audiopro.djmrec.streaming.YouTubeLiveSession
 import com.audiopro.djmrec.usb.CaptureOverride
 import com.audiopro.djmrec.usb.CaptureOverrideStore
 import com.audiopro.djmrec.usb.UsbAudioDeviceInfo
@@ -72,7 +59,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshInputs() = usbAudioManager.refreshInputs()
 
     fun selectInput(deviceName: String) {
-        if (saving.value || liveStreamState.value.isActive ||
+        if (saving.value ||
             _recordingState.value is RecordingState.Recording || _recordingState.value is RecordingState.Paused ||
             _recordingState.value is RecordingState.Preparing || deviceState.value?.deviceName == deviceName) return
         val service = boundService ?: return
@@ -135,14 +122,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _recordingHealth = MutableStateFlow(RecordingHealth.Ready)
     val recordingHealth: StateFlow<RecordingHealth> = _recordingHealth.asStateFlow()
 
-    private val _liveStreamState = MutableStateFlow(LiveStreamState())
-    val liveStreamState: StateFlow<LiveStreamState> = _liveStreamState.asStateFlow()
-
-    private val youtubeCoordinator = (application as DjmRecApplication).youtubeCoordinator
-    val streamSetupState = youtubeCoordinator.streamSetupState
-    val youtubeBroadcastState = youtubeCoordinator.youtubeBroadcastState
-    val liveStreamKey = androidx.compose.runtime.mutableStateOf("")
-
     private val _waveformEnabled = MutableStateFlow(
         prefs.getBoolean(KEY_WAVEFORM_ENABLED, true)
     )
@@ -194,7 +173,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         waveformVisible = visible
         boundService?.setVisualsVisible(uiVisible, waveformVisible)
     }
-    private var livePreview: SurfaceView? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -211,8 +189,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch { service.elapsedMillis.collect { _elapsedMillis.value = it } }
             viewModelScope.launch { service.waveformBins.collect { _waveformBins.value = it } }
             viewModelScope.launch { service.health.collect { _recordingHealth.value = it } }
-            viewModelScope.launch { service.liveState.collect { _liveStreamState.value = it } }
-            livePreview?.let(service::attachLivePreview)
             ensureLiveMonitoring()
         }
 
@@ -307,7 +283,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setUsbChannelOffset(offset: Int) {
-        if (saving.value || liveStreamState.value.isActive) return
+        if (saving.value) return
         if (_recordingState.value is RecordingState.Recording ||
             _recordingState.value is RecordingState.Paused ||
             _recordingState.value is RecordingState.Preparing) return
@@ -344,7 +320,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun captureSettingsLocked(): Boolean =
-        saving.value || liveStreamState.value.isActive ||
+        saving.value ||
             _recordingState.value is RecordingState.Recording ||
             _recordingState.value is RecordingState.Paused ||
             _recordingState.value is RecordingState.Preparing
@@ -534,91 +510,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun resumeRecording() = sendCommand(RecordingService.ACTION_RESUME)
     fun stopRecording() = sendCommand(RecordingService.ACTION_STOP)
 
-    private fun captureReady(state: RecordingState): Boolean =
-        state is RecordingState.Monitoring ||
-            state is RecordingState.Recording ||
-            state is RecordingState.Paused
-
-    fun startLiveStream(config: LiveStreamConfig) {
-        val context = getApplication<Application>()
-        _liveStreamState.value = LiveStreamState(
-            status = LiveStreamStatus.PREPARING,
-            message = "Arming USB mixer",
-            platform = config.platform,
-            videoMode = config.videoMode
-        )
-        viewModelScope.launch {
-            if (!captureReady(_recordingState.value)) {
-                if (deviceState.value == null) {
-                    _liveStreamState.value = LiveStreamState(
-                        status = LiveStreamStatus.ERROR,
-                        message = "Connect a USB mixer before going live",
-                        platform = config.platform,
-                        videoMode = config.videoMode
-                    )
-                    return@launch
-                }
-                startMonitoringDevice(context)
-                val readyState = withTimeoutOrNull(15_000L) {
-                    recordingState.first { state ->
-                        captureReady(state) || state is RecordingState.Error
-                    }
-                }
-                if (readyState == null || !captureReady(readyState)) {
-                    _liveStreamState.value = LiveStreamState(
-                        status = LiveStreamStatus.ERROR,
-                        message = (readyState as? RecordingState.Error)?.message
-                            ?: "USB mixer did not become ready. Reconnect and try again.",
-                        platform = config.platform,
-                        videoMode = config.videoMode
-                    )
-                    return@launch
-                }
-            }
-
-            _liveStreamState.value = LiveStreamState(
-                status = LiveStreamStatus.PREPARING,
-                message = "Starting ${config.platform.label} encoders",
-                platform = config.platform,
-                videoMode = config.videoMode
-            )
-            context.startService(
-                Intent(context, RecordingService::class.java)
-                    .setAction(RecordingService.ACTION_START_LIVE)
-                    .putExtra(RecordingService.EXTRA_LIVE_PLATFORM, config.platform.name)
-                    .putExtra(RecordingService.EXTRA_LIVE_SERVER_URL, config.serverUrl)
-                    .putExtra(RecordingService.EXTRA_LIVE_STREAM_KEY, config.streamKey)
-                    .putExtra(RecordingService.EXTRA_LIVE_VIDEO_MODE, config.videoMode.name)
-                    .putExtra(RecordingService.EXTRA_LIVE_PORTRAIT, config.portrait)
-                    .putExtra(RecordingService.EXTRA_LIVE_ARTWORK_URI, config.artworkUri)
-                    .putExtra(RecordingService.EXTRA_LIVE_AUDIO_BITRATE, config.audioBitrate)
-            )
-        }
-    }
-
-    fun stopLiveStream() {
-        sendCommand(RecordingService.ACTION_STOP_LIVE)
-        youtubeCoordinator.finishYouTubeSession()
-    }
-
-    fun prepareYouTubeDestination(accessToken: String, title: String, privacy: YouTubePrivacy) =
-        youtubeCoordinator.prepareYouTubeDestination(accessToken, title, privacy)
-    fun setStreamSetupError(platform: LivePlatform, message: String) = youtubeCoordinator.setStreamSetupError(platform, message)
-    fun consumeStreamCredentials() = youtubeCoordinator.consumeStreamCredentials()
-    fun cancelStreamSetup() = youtubeCoordinator.cancelStreamSetup()
-
-    fun attachLivePreview(surfaceView: SurfaceView) {
-        livePreview = surfaceView
-        boundService?.attachLivePreview(surfaceView)
-    }
-
-    fun detachLivePreview() {
-        boundService?.detachLivePreview()
-        livePreview = null
-    }
-
-    fun switchLiveCamera() = boundService?.switchLiveCamera()
-
     private fun sendCommand(action: String) {
         val context = getApplication<Application>()
         startServiceSafely(context, Intent(context, RecordingService::class.java).setAction(action))
@@ -671,7 +562,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        detachLivePreview()
         if (isBound) {
             getApplication<Application>().unbindService(connection)
             isBound = false

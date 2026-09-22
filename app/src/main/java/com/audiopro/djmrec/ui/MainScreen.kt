@@ -6,17 +6,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.FiberManualRecord
-import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -58,12 +55,11 @@ import com.audiopro.djmrec.update.AppUpdate
 import com.audiopro.djmrec.update.UpdateChecker
 import kotlinx.coroutines.launch
 
+/** Every screen in the app. The navigation drawer is the only way to move between them. */
 private enum class Destination(val label: String, val icon: ImageVector) {
     RECORDING("Recording", Icons.Filled.FiberManualRecord),
-    LIVE("Go Live", Icons.Filled.LiveTv),
     RECORDINGS("My Recordings", Icons.Filled.LibraryMusic),
     SETTINGS("Settings", Icons.Filled.Settings),
-    /** Drawer-only: support report, USB descriptor export. Not in the bottom bar. */
     DIAGNOSTICS("Diagnostics", Icons.Filled.BugReport)
 }
 
@@ -75,11 +71,9 @@ fun MainScreen(viewModel: MainViewModel) {
     val application = context.applicationContext as DjmRecApplication
     val recoveryNotice by application.recoveryNotice.collectAsState()
     val recordingState by viewModel.recordingState.collectAsState()
-    val liveState by viewModel.liveStreamState.collectAsState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var selectedDestination by rememberSaveable { mutableStateOf(Destination.RECORDING) }
-    val cameraMode = selectedDestination == Destination.LIVE && liveState.isActive && liveState.usesCamera
     var availableUpdate by remember { mutableStateOf<AppUpdate?>(null) }
 
     LaunchedEffect(Unit) {
@@ -108,7 +102,7 @@ fun MainScreen(viewModel: MainViewModel) {
                 UpdateChecker.defer(context, update.tag)
                 availableUpdate = null
             },
-            title = { Text("DJM REC ${update.version} available") },
+            title = { Text("Set Recorder ${update.version} available") },
             text = { Text("A newer release is ready on GitHub. Recording will never be interrupted for an update.") },
             confirmButton = {
                 Button(onClick = {
@@ -127,14 +121,13 @@ fun MainScreen(viewModel: MainViewModel) {
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = !cameraMode,
         drawerContent = {
             ModalDrawerSheet(
                 drawerContainerColor = SurfaceDark
             ) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "DJM REC",
+                    text = "Set Recorder",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     modifier = Modifier.padding(horizontal = 28.dp, vertical = 12.dp)
@@ -182,46 +175,17 @@ fun MainScreen(viewModel: MainViewModel) {
                         )
                     }
                 }
-                HorizontalDivider(
-                    color = TextSecondary.copy(alpha = 0.14f),
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                )
-                NavigationDrawerItem(
-                    icon = {
-                        Icon(Icons.Filled.Coffee, contentDescription = null, tint = TextSecondary)
-                    },
-                    label = { Text("Buy me a coffee", color = TextSecondary) },
-                    selected = false,
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://buymeacoffee.com/p2gr"))
-                        )
-                    },
-                    colors = NavigationDrawerItemDefaults.colors(
-                        unselectedContainerColor = SurfaceDark
-                    ),
-                    modifier = Modifier.padding(horizontal = 12.dp)
-                )
             }
         }
     ) {
         Scaffold(
             containerColor = BackgroundDark,
-            bottomBar = {
-                if (!cameraMode) NavigationBar(containerColor = SurfaceDark) {
-                    listOf(Destination.RECORDING, Destination.LIVE, Destination.RECORDINGS, Destination.SETTINGS).forEach { dest ->
-                        NavigationBarItem(selected = selectedDestination == dest, onClick = { selectedDestination = dest },
-                            icon = { Icon(dest.icon, null) },
-                            label = { Text(when (dest) { Destination.RECORDING -> "Record"; Destination.LIVE -> "Live"; Destination.RECORDINGS -> "Sets"; else -> "Settings" }) })
-                    }
-                }
-            },
             topBar = {
-                if (!cameraMode) TopAppBar(
+                TopAppBar(
                     title = {
                         Text(
-                            text = if (selectedDestination == Destination.RECORDING) "DJM REC" else selectedDestination.label,
+                            text = if (selectedDestination == Destination.RECORDING) "Set Recorder"
+                            else selectedDestination.label,
                             color = TextPrimary
                         )
                     },
@@ -238,12 +202,13 @@ fun MainScreen(viewModel: MainViewModel) {
                 )
             }
         ) { padding ->
-            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            // navigationBarsPadding(): without a bottomBar the Scaffold no longer reserves an
+            // inset for the system navigation bar, so content would otherwise run underneath it.
+            Column(modifier = Modifier.fillMaxSize().padding(padding).navigationBarsPadding()) {
                 destinationState.SaveableStateProvider(selectedDestination.name) {
                 when (selectedDestination) {
                     Destination.RECORDING -> RecorderScreen(viewModel = viewModel, onOpenLibrary = { selectedDestination = Destination.RECORDINGS })
-                    Destination.LIVE -> LiveStreamScreen(viewModel = viewModel)
-                    Destination.RECORDINGS -> LibraryScreen(onBack = null)
+                    Destination.RECORDINGS -> LibraryScreen()
                     Destination.SETTINGS -> SettingsScreen(viewModel = viewModel)
                     Destination.DIAGNOSTICS -> DiagnosticsScreen()
                 }

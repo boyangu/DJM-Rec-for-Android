@@ -16,7 +16,6 @@ import kotlinx.coroutines.flow.asStateFlow
  * when they return.
  */
 class DjmRecApplication : Application() {
-    val youtubeCoordinator = com.audiopro.djmrec.streaming.YouTubeBroadcastCoordinator()
     val sessionEvents = com.audiopro.djmrec.audio.SessionEvents()
 
     lateinit var usbAudioManager: UsbAudioManager

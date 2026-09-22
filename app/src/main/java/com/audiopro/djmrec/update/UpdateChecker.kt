@@ -27,7 +27,7 @@ sealed interface UpdateCheckResult {
 }
 
 object UpdateChecker {
-    private const val RELEASE_API = "https://api.github.com/repos/P2GR/DJM-Rec-for-Android/releases/latest"
+    private const val RELEASE_API = "https://api.github.com/repos/boyangu/DJM-Rec-for-Android/releases/latest"
     private const val PREFS = "app_updates"
     private const val CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
     private const val DEFER_INTERVAL_MS = 24L * 60L * 60L * 1000L
@@ -82,7 +82,7 @@ object UpdateChecker {
             requestMethod = "GET"
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("X-GitHub-Api-Version", "2026-03-10")
-            setRequestProperty("User-Agent", "DJMRec-Android/${BuildConfig.VERSION_NAME}")
+            setRequestProperty("User-Agent", "SetRecorder-Android/${BuildConfig.VERSION_NAME}")
         }
         return try {
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
@@ -155,16 +155,16 @@ object UpdateChecker {
 
     internal fun isTrustedReleaseUrl(value: String): Boolean = trustedGitHubUrl(
         value,
-        "/P2GR/DJM-Rec-for-Android/releases/tag/"
+        "/boyangu/DJM-Rec-for-Android/releases/tag/"
     )
 
     internal fun isTrustedAssetUrl(value: String): Boolean = trustedGitHubUrl(
         value,
-        "/P2GR/DJM-Rec-for-Android/releases/download/"
+        "/boyangu/DJM-Rec-for-Android/releases/download/"
     )
 
     internal fun isReleaseApkName(value: String): Boolean =
-        value.startsWith("DJM-Rec-for-Android-v") &&
+        value.startsWith("Set-Recorder-v") &&
             value.endsWith("-release.apk") &&
             '/' !in value && '\\' !in value
 

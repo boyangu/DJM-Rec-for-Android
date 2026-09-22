@@ -1,8 +1,10 @@
-# DJM Rec for Android
+# Set Recorder
 
 Record your DJ sets from a compatible USB mixer directly to your Android phone.
 
-**[Download the latest release APK](https://github.com/P2GR/DJM-Rec-for-Android/releases/latest)**
+A fork of [P2GR/DJM-Rec-for-Android](https://github.com/P2GR/DJM-Rec-for-Android).
+
+**[Download the latest release APK](https://github.com/boyangu/DJM-Rec-for-Android/releases/latest)**
 
 Requires Android 10 or newer, a 64-bit ARM device with USB host support, and a USB data cable.
 Choose the **release APK** for everyday use. The debug APK is for testing.
@@ -33,7 +35,7 @@ analog output.
    USB host/OTG). A USB storage port or Link Export connection does not provide recording audio.
    The top-panel **MULTI I/O / mobile-device port** (DJM-A9, DJM-V5) is a USB *host* port made for
    iPhone/iPad running DJM-REC; Android cannot act as a USB audio device, so it will never work there.
-2. Open DJM Rec and allow USB access. Tap the source name to choose an input if several are connected.
+2. Open Set Recorder and allow USB access. Tap the source name to choose an input if several are connected.
 3. Play audio and check both meters. Automatic arming starts monitoring, not recording.
 4. Open **Recording setup** to choose WAV/FLAC, sample rate, gain and a USB channel pair. Software
    gain defaults to **0 dB**; on the DJM-A9 and DJM-V10 prefer the **Mixer USB recording level**
@@ -63,10 +65,6 @@ analog output.
 - Saved-set search, playback, sharing, export, rename and deletion.
 - Settings for automatic arming, waveform animation, screen wake and stop confirmation.
 - Background recording with a persistent notification. **Save & close** saves and ends capture.
-- Experimental livestreaming: YouTube with Google sign-in, Mixcloud and custom RTMP/RTMPS.
-  Follow **Connect, Picture, Go live**, then check the service preview.
-  Camera streams open a full preview with local meters, timers, gain controls and confirmed stop.
-  Provider setup and real broadcasts still need validation.
 
 Keep USB connected during a set. Force-stop, reboot, cable loss and some Android battery/call
 restrictions can interrupt recording. Track markers identify moments in a stereo recording;

@@ -16,9 +16,9 @@ class UpdateCheckerTest {
     @Test
     fun trustsOnlyThisRepositoriesReleaseUrls() {
         assertTrue(UpdateChecker.isTrustedReleaseUrl(
-            "https://github.com/P2GR/DJM-Rec-for-Android/releases/tag/v0.42.0"))
+            "https://github.com/boyangu/DJM-Rec-for-Android/releases/tag/v0.42.0"))
         assertTrue(UpdateChecker.isTrustedAssetUrl(
-            "https://github.com/P2GR/DJM-Rec-for-Android/releases/download/v0.42.0/app-release.apk"))
+            "https://github.com/boyangu/DJM-Rec-for-Android/releases/download/v0.42.0/app-release.apk"))
         assertFalse(UpdateChecker.isTrustedReleaseUrl("https://example.com/releases/tag/v0.42.0"))
         assertFalse(UpdateChecker.isTrustedAssetUrl(
             "https://github.com/other/repository/releases/download/v0.42.0/app-release.apk"))
@@ -26,8 +26,8 @@ class UpdateCheckerTest {
 
     @Test
     fun acceptsOnlyVersionedReleaseApkNames() {
-        assertTrue(UpdateChecker.isReleaseApkName("DJM-Rec-for-Android-v0.42.0-release.apk"))
-        assertFalse(UpdateChecker.isReleaseApkName("DJM-Rec-for-Android-v0.42.0-debug.apk"))
-        assertFalse(UpdateChecker.isReleaseApkName("../DJM-Rec-for-Android-v0.42.0-release.apk"))
+        assertTrue(UpdateChecker.isReleaseApkName("Set-Recorder-v0.42.0-release.apk"))
+        assertFalse(UpdateChecker.isReleaseApkName("Set-Recorder-v0.42.0-debug.apk"))
+        assertFalse(UpdateChecker.isReleaseApkName("../Set-Recorder-v0.42.0-release.apk"))
     }
 }

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.44.0 (2026-09-22)
+
+- Rename the app to **Set Recorder** and replace the launcher icon with a mirrored blue/amber/cream
+  waveform on black, including an Android 13+ themed (monochrome) layer the project lacked.
+  Recordings still save to `Music/DJMRec`, so every existing set stays listed in Sets.
+- Remove the Go Live / livestreaming feature entirely: the streaming package, both live screens,
+  the YouTube broadcast coordinator and four tests. This also drops the RootEncoder and
+  play-services-auth dependencies, the JitPack repository, the CAMERA permission and the camera
+  foreground-service type, and the Twitch/Google OAuth build config.
+- Remove the live PCM tap from the native engine. That frees a second ring buffer (~768 KB
+  resident at 48 kHz) and removes per-buffer work from the realtime audio callbacks.
+- Remove the bottom navigation bar; the side drawer is now the only navigation. Remove the
+  "Buy me a coffee" drawer entry.
+- Point the in-app updater at this fork and rename the release APK to `Set-Recorder-v*.apk`.
+  Previously it offered upstream's APK, which is signed with a different key and cannot install.
+
 ## v0.43.0 (2026-09-21)
 
 - Add a DDJ-FLX10 profile (2b73:0041) from an on-device descriptor dump: 10-ch 24-bit UAC2

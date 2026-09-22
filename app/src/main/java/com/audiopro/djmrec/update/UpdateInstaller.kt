@@ -91,7 +91,7 @@ object UpdateInstaller {
             instanceFollowRedirects = true
             requestMethod = "GET"
             setRequestProperty("Accept", "application/octet-stream")
-            setRequestProperty("User-Agent", "DJMRec-Android")
+            setRequestProperty("User-Agent", "SetRecorder-Android")
             if (responseCode !in 200..299) {
                 disconnect()
                 throw IOException("Update download failed (HTTP $responseCode)")
@@ -123,7 +123,7 @@ object UpdateInstaller {
         } ?: throw IOException("Downloaded file is not a valid APK")
         if (info.packageName != "com.audiopro.djmrec" || info.versionName != expectedVersion) {
             apk.delete()
-            throw IOException("Downloaded APK does not match DJM REC $expectedVersion")
+            throw IOException("Downloaded APK does not match Set Recorder $expectedVersion")
         }
     }
 }

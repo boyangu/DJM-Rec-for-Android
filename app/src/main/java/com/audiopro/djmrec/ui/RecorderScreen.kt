@@ -206,7 +206,6 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
 
 @Composable
 internal fun RecordingSetupControls(viewModel: MainViewModel) {
-    val live by viewModel.liveStreamState.collectAsState()
     val device by viewModel.deviceState.collectAsState()
     val state by viewModel.recordingState.collectAsState()
     val saving by viewModel.saving.collectAsState()
@@ -216,9 +215,9 @@ internal fun RecordingSetupControls(viewModel: MainViewModel) {
     val includeMic by viewModel.includeMicInMix.collectAsState()
     val captureLevel by viewModel.captureLevelStep.collectAsState()
     val selectedRate by viewModel.selectedSampleRate.collectAsState()
-    val enabled = !saving && !live.isActive && (state is RecordingState.Idle || state is RecordingState.Monitoring || state is RecordingState.Error)
+    val enabled = !saving && (state is RecordingState.Idle || state is RecordingState.Monitoring || state is RecordingState.Error)
     val profile = device?.pioneerMixerProfile
-    if (!enabled) Text("Capture settings locked while recording or streaming.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+    if (!enabled) Text("Capture settings locked while recording.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
     if (device?.formatGuessed == true) {
         Text("Unverified mixer profile: the wire format is assumed (12 channels, 24-bit). If audio sounds wrong, " +
             "open Diagnostics, copy the USB descriptors and report them so the profile can be completed.",

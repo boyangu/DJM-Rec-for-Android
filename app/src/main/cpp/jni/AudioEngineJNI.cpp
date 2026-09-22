@@ -123,32 +123,6 @@ Java_com_audiopro_djmrec_audio_AudioEngine_takeRouteFallbackRequest(JNIEnv* /*en
     return UsbAudioEngine::instance().takeRouteFallbackRequest() ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_audiopro_djmrec_audio_AudioEngine_startLivePcm(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return UsbAudioEngine::instance().startLivePcm() ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT void JNICALL
-Java_com_audiopro_djmrec_audio_AudioEngine_stopLivePcm(JNIEnv* /*env*/, jobject /*thiz*/) {
-    UsbAudioEngine::instance().stopLivePcm();
-}
-
-JNIEXPORT jint JNICALL
-Java_com_audiopro_djmrec_audio_AudioEngine_readLivePcm16(
-    JNIEnv* env, jobject /*thiz*/, jbyteArray destination) {
-    if (!destination) return 0;
-    const jsize capacity = env->GetArrayLength(destination);
-    if (capacity <= 0) return 0;
-    static thread_local std::vector<uint8_t> buffer;
-    if (buffer.size() < static_cast<size_t>(capacity)) buffer.resize(capacity);
-    const size_t read = UsbAudioEngine::instance().readLivePcm16(buffer.data(), capacity);
-    if (read > 0) {
-        env->SetByteArrayRegion(
-            destination, 0, static_cast<jsize>(read), reinterpret_cast<const jbyte*>(buffer.data()));
-    }
-    return static_cast<jint>(read);
-}
-
 JNIEXPORT void JNICALL
 Java_com_audiopro_djmrec_audio_AudioEngine_pauseRecording(JNIEnv* /*env*/, jobject /*thiz*/) {
     UsbAudioEngine::instance().pauseRecording();

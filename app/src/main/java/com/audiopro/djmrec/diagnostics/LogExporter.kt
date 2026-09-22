@@ -41,11 +41,10 @@ object LogExporter {
         val sb = StringBuilder()
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
 
-        sb.appendLine("djmrec diagnostic report")
+        sb.appendLine("Set Recorder diagnostic report")
         sb.appendLine("generated: $timestamp")
         sb.appendLine("app version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         sb.appendLine("build type: ${BuildConfig.BUILD_TYPE} debug=${BuildConfig.DEBUG}")
-        sb.appendLine("Google OAuth client ID: ${BuildConfig.GOOGLE_OAUTH_CLIENT_ID}")
         sb.appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT})")
         sb.appendLine("hardware: ${Build.HARDWARE} board=${Build.BOARD} supportedAbis=${Build.SUPPORTED_ABIS.toList()}")
         sb.appendLine()
@@ -222,7 +221,7 @@ object LogExporter {
     /** Writes the report to a timestamped file under the app's external files dir (falls back to cache). */
     fun writeReportToFile(context: Context, report: String): File {
         val dir = (context.getExternalFilesDir("logs") ?: File(context.cacheDir, "logs")).apply { mkdirs() }
-        val filename = "djmrec-diagnostics-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.txt"
+        val filename = "set-recorder-diagnostics-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.txt"
         val file = File(dir, filename)
         file.writeText(report)
         return file
@@ -234,7 +233,7 @@ object LogExporter {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "djmrec diagnostic log")
+            putExtra(Intent.EXTRA_SUBJECT, "Set Recorder diagnostic log")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "Share diagnostic log"))

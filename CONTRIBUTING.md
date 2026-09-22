@@ -1,4 +1,4 @@
-# Contributing to DJM Rec for Android
+# Contributing to Set Recorder
 
 ## Setup
 

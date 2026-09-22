@@ -111,14 +111,6 @@ object AudioEngine {
      */
     external fun takeRouteFallbackRequest(): Boolean
 
-    /** Starts/stops independent stereo PCM tap used by AAC livestream encoder. */
-    external fun startLivePcm(): Boolean
-
-    external fun stopLivePcm()
-
-    /** Reads little-endian stereo PCM16 without consuming recording writer data. */
-    external fun readLivePcm16(destination: ByteArray): Int
-
     external fun pauseRecording()
 
     external fun resumeRecording()

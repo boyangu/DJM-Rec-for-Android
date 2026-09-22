@@ -31,7 +31,6 @@ build/
 *.pkcs12
 !debug.keystore
 keystore.properties
-streaming.properties
 bugfender.properties
 # Firebase client configuration is provisioned locally / through GitHub Actions secrets.
 google-services.json

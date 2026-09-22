@@ -32,7 +32,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @Composable
-fun LibraryScreen(onBack: (() -> Unit)? = null) {
+fun LibraryScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableIntStateOf(0) }

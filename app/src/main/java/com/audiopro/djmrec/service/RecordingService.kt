@@ -17,7 +17,6 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
-import android.view.SurfaceView
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -41,12 +40,6 @@ import com.audiopro.djmrec.storage.PendingRecordingOutput
 import com.audiopro.djmrec.storage.RecordingOutputManager
 import com.audiopro.djmrec.storage.RecordingSessionStore
 import com.audiopro.djmrec.storage.RecordingStoragePolicy
-import com.audiopro.djmrec.streaming.LivePlatform
-import com.audiopro.djmrec.streaming.LiveStreamConfig
-import com.audiopro.djmrec.streaming.LiveStreamController
-import com.audiopro.djmrec.streaming.LiveStreamState
-import com.audiopro.djmrec.streaming.LiveStreamStatus
-import com.audiopro.djmrec.streaming.LiveVideoMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,8 +64,6 @@ class RecordingService : LifecycleService() {
         const val ACTION_STOP_ALL = "com.audiopro.djmrec.action.STOP_ALL"
         const val ACTION_MARK_TRACK = "com.audiopro.djmrec.action.MARK_TRACK"
         const val ACTION_STOP = "com.audiopro.djmrec.action.STOP"
-        const val ACTION_START_LIVE = "com.audiopro.djmrec.action.START_LIVE"
-        const val ACTION_STOP_LIVE = "com.audiopro.djmrec.action.STOP_LIVE"
 
         const val EXTRA_DEVICE_ID = "extra_device_id"
         const val EXTRA_SAMPLE_RATE = "extra_sample_rate"
@@ -80,13 +71,6 @@ class RecordingService : LifecycleService() {
         const val EXTRA_CHANNEL_COUNT = "extra_channel_count"
         const val EXTRA_FORMAT = "extra_format"
         const val EXTRA_RECORDING_GAIN_DB = "extra_recording_gain_db"
-        const val EXTRA_LIVE_PLATFORM = "extra_live_platform"
-        const val EXTRA_LIVE_SERVER_URL = "extra_live_server_url"
-        const val EXTRA_LIVE_STREAM_KEY = "extra_live_stream_key"
-        const val EXTRA_LIVE_VIDEO_MODE = "extra_live_video_mode"
-        const val EXTRA_LIVE_PORTRAIT = "extra_live_portrait"
-        const val EXTRA_LIVE_ARTWORK_URI = "extra_live_artwork_uri"
-        const val EXTRA_LIVE_AUDIO_BITRATE = "extra_live_audio_bitrate"
 
         /** [EXTRA_CAPTURE_MODE] value: standard AAudio/AudioRecord path via [EXTRA_DEVICE_ID]. */
         const val CAPTURE_MODE_AAUDIO = 0
@@ -154,11 +138,6 @@ class RecordingService : LifecycleService() {
 
     private val _health = MutableStateFlow(RecordingHealth.Ready)
     val health: StateFlow<RecordingHealth> = _health.asStateFlow()
-
-    private val _liveState = MutableStateFlow(LiveStreamState())
-    val liveState: StateFlow<LiveStreamState> = _liveState.asStateFlow()
-    private lateinit var liveStreamController: LiveStreamController
-    private var cameraForegroundActive = false
 
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -338,32 +317,6 @@ class RecordingService : LifecycleService() {
         }
         monitorThread = HandlerThread("AudioMonitorThread", Process.THREAD_PRIORITY_DEFAULT).apply { start() }
         monitorHandler = Handler(monitorThread.looper)
-        liveStreamController = LiveStreamController(this)
-        lifecycleScope.launch {
-            var lastDiagnosticStatus: com.audiopro.djmrec.streaming.LiveStreamStatus? = null
-            liveStreamController.state.collect {
-                val statusChanged = it.status != lastDiagnosticStatus
-                if (statusChanged) {
-                    lastDiagnosticStatus = it.status
-                    com.audiopro.djmrec.diagnostics.RemoteDiagnostics.event("Streaming", "${it.status}: ${it.message}")
-                    if (it.status == com.audiopro.djmrec.streaming.LiveStreamStatus.ERROR)
-                        com.audiopro.djmrec.diagnostics.RemoteDiagnostics.issue("Streaming failure", it.message)
-                }
-                _liveState.value = it
-                (application as DjmRecApplication).youtubeCoordinator.updateLiveState(it)
-                if (statusChanged && it.status == com.audiopro.djmrec.streaming.LiveStreamStatus.PREPARING &&
-                    it.platform == LivePlatform.YOUTUBE) (application as DjmRecApplication).youtubeCoordinator.startYouTubeLifecycle()
-                if (!it.isActive && cameraForegroundActive) {
-                    cameraForegroundActive = false
-                    if (_state.value is RecordingState.Monitoring ||
-                        _state.value is RecordingState.Recording ||
-                        _state.value is RecordingState.Paused) {
-                        startForegroundNotification()
-                    }
-                }
-                if (statusChanged && ::monitorHandler.isInitialized) updateNotification()
-            }
-        }
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -544,8 +497,6 @@ class RecordingService : LifecycleService() {
             ACTION_PAUSE -> pauseSession()
             ACTION_RESUME -> resumeSession()
             ACTION_STOP -> stopSession()
-            ACTION_START_LIVE -> startLiveStream(intent)
-            ACTION_STOP_LIVE -> stopLiveStream()
         }
         // Deliberately not sticky: if the process is killed mid-recording we do not want to
         // silently resume capturing without the user re-confirming — safer default for a
@@ -568,61 +519,6 @@ class RecordingService : LifecycleService() {
         val value = intent.getIntExtra(EXTRA_FORMAT, currentFormat.nativeValue)
         return RecordingFormat.entries.firstOrNull { it.nativeValue == value } ?: RecordingFormat.WAV
     }
-
-    private fun startLiveStream(intent: Intent) {
-        val platform = intent.getStringExtra(EXTRA_LIVE_PLATFORM)
-            ?.let { runCatching { LivePlatform.valueOf(it) }.getOrNull() }
-            ?: LivePlatform.CUSTOM
-        val videoMode = intent.getStringExtra(EXTRA_LIVE_VIDEO_MODE)
-            ?.let { runCatching { LiveVideoMode.valueOf(it) }.getOrNull() }
-            ?: LiveVideoMode.ARTWORK
-        val captureReady = _state.value is RecordingState.Monitoring ||
-            _state.value is RecordingState.Recording || _state.value is RecordingState.Paused
-        if (!captureReady || !AudioEngine.isStreamOpen()) {
-            liveStreamController.reject("Connect a mixer and wait for signal before going live", platform, videoMode)
-            return
-        }
-        val usesCamera = videoMode != LiveVideoMode.ARTWORK
-        if (usesCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
-            PackageManager.PERMISSION_GRANTED) {
-            liveStreamController.reject("Camera permission is required for camera streaming", platform, videoMode)
-            return
-        }
-        val config = LiveStreamConfig(
-            platform = platform,
-            serverUrl = intent.getStringExtra(EXTRA_LIVE_SERVER_URL).orEmpty(),
-            streamKey = intent.getStringExtra(EXTRA_LIVE_STREAM_KEY).orEmpty(),
-            videoMode = videoMode,
-            portrait = intent.getBooleanExtra(EXTRA_LIVE_PORTRAIT, false),
-            artworkUri = intent.getStringExtra(EXTRA_LIVE_ARTWORK_URI),
-            audioBitrate = intent.getIntExtra(
-                EXTRA_LIVE_AUDIO_BITRATE,
-                when (platform) {
-                    LivePlatform.YOUTUBE -> 128_000
-                    LivePlatform.MIXCLOUD -> 320_000
-                    else -> 256_000
-                }
-            ).coerceIn(96_000, 320_000)
-        )
-        cameraForegroundActive = usesCamera
-        if (!startForegroundNotification()) {
-            cameraForegroundActive = false
-            liveStreamController.reject("Android blocked camera streaming. Keep the app open and try again.", platform, videoMode)
-            return
-        }
-        liveStreamController.start(config, currentSampleRate)
-    }
-
-    fun stopLiveStream(errorMessage: String? = null) {
-        if (errorMessage == null) liveStreamController.stop()
-        else liveStreamController.stopWithError(errorMessage)
-    }
-
-    fun attachLivePreview(surfaceView: SurfaceView) = liveStreamController.attachPreview(surfaceView)
-
-    fun detachLivePreview() = liveStreamController.detachPreview()
-
-    fun switchLiveCamera() = liveStreamController.switchCamera()
 
     fun startSession(
         audioManagerDeviceId: Int,
@@ -829,13 +725,6 @@ class RecordingService : LifecycleService() {
     }
 
     private fun failEncoding(message: String) {
-        if (_liveState.value.isActive) {
-            currentOutput = null
-            currentSessionId = null
-            _state.value = RecordingState.Monitoring
-            _health.value = RecordingHealth(RecordingHealthLevel.ERROR, message)
-            return
-        }
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
         currentOutput = null
@@ -977,7 +866,6 @@ class RecordingService : LifecycleService() {
         if (_saving.value) return
         pendingRecordingFormat = null
         if (_state.value is RecordingState.Preparing || _state.value is RecordingState.Error) {
-            stopLiveStream()
             AudioEngine.close()
             releaseIsoConnectionIfNeeded()
             _state.value = RecordingState.Idle
@@ -989,7 +877,6 @@ class RecordingService : LifecycleService() {
         if (_state.value is RecordingState.Idle || _state.value is RecordingState.Monitoring) {
             // Full stop from monitoring: close the stream.
             if (_state.value is RecordingState.Monitoring) {
-                stopLiveStream()
                 AudioEngine.close()
                 releaseIsoConnectionIfNeeded()
                 releaseWakeLock()
@@ -1044,7 +931,6 @@ class RecordingService : LifecycleService() {
     }
 
     private fun closeCaptureAndTask() {
-        stopLiveStream()
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
         releaseWakeLock()
@@ -1068,7 +954,6 @@ class RecordingService : LifecycleService() {
 
     @Synchronized
     private fun stopSessionWithError(message: String, alreadyStopped: Boolean = false) {
-        stopLiveStream("Mixer audio stopped: $message")
         val duration = if (alreadyStopped) AudioEngine.getElapsedMillis() else AudioEngine.stopRecording()
         val finalized = finalizeCurrentOutput(duration)
         if (finalized) RecordingSessionStore.completeIfFinalized(this)
@@ -1096,7 +981,6 @@ class RecordingService : LifecycleService() {
             stopSessionWithError("USB mixer disconnected. Recording finalized safely.")
             return
         }
-        stopLiveStream("USB mixer disconnected")
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
         releaseWakeLock()
@@ -1111,8 +995,6 @@ class RecordingService : LifecycleService() {
 
     @Synchronized
     override fun onDestroy() {
-        (application as DjmRecApplication).youtubeCoordinator.finishYouTubeSession()
-        if (::liveStreamController.isInitialized) liveStreamController.release()
         if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused) {
             val duration = AudioEngine.stopRecording()
             if (finalizeCurrentOutput(duration)) RecordingSessionStore.completeIfFinalized(this)
@@ -1174,9 +1056,8 @@ class RecordingService : LifecycleService() {
         // minSdk is 29 (Q), so the ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE overload is
         // always available — no legacy startForeground(id, notification) fallback needed.
         val foregroundType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            (if (isUsbIsoSession) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                else ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE) or
-                if (cameraForegroundActive) ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA else 0
+            if (isUsbIsoSession) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            else ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         } else {
             0
         }
@@ -1205,7 +1086,6 @@ class RecordingService : LifecycleService() {
     private fun buildNotification(): Notification {
         val isPaused = _state.value is RecordingState.Paused
         val isRecording = _state.value is RecordingState.Recording || isPaused
-        val live = _liveState.value
         val elapsed = formatElapsed(_elapsedMillis.value)
         val hasSignal = _levels.value.left.peakDb > -50f || _levels.value.right.peakDb > -50f
 
@@ -1227,17 +1107,11 @@ class RecordingService : LifecycleService() {
         }
         val title = when {
             _saving.value -> "Saving your set..."
-            live.isActive -> "Live on ${live.platform?.label ?: "RTMP"}"
             isPaused -> getString(R.string.notification_title_paused)
             isRecording -> getString(R.string.notification_title_recording, deviceLabel)
             else -> "$deviceLabel connected"
         }
         val text = when {
-            live.status == LiveStreamStatus.LIVE -> {
-                val mbps = live.bitrateBitsPerSecond / 1_000_000f
-                String.format(Locale.US, "Streaming %.1f Mbps%s", mbps, if (isRecording) " | REC $elapsed" else "")
-            }
-            live.isActive -> live.message
             isRecording -> getString(R.string.notification_text_elapsed, elapsed) +
                 if (hasSignal && !isPaused) " | signal" else ""
             else -> if (hasSignal) "USB signal ready" else "Waiting for mixer signal"
@@ -1258,15 +1132,6 @@ class RecordingService : LifecycleService() {
                     android.R.drawable.ic_menu_close_clear_cancel,
                     "Save & close",
                     servicePendingIntent(ACTION_STOP_ALL)
-                )
-            )
-        }
-        if (live.isActive) {
-            builder.addAction(
-                NotificationCompat.Action(
-                    android.R.drawable.ic_menu_close_clear_cancel,
-                    "Stop live",
-                    servicePendingIntent(ACTION_STOP_LIVE)
                 )
             )
         }
