@@ -337,6 +337,11 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     mSetupRouteValue = -1;
     mResolvedChannelOffset = config.extractChannelOffset;
     mChannelOffsetFrozen.store(false, std::memory_order_relaxed);
+    mFramesEmitted.store(0, std::memory_order_relaxed);
+    mCaptureStartNanos.store(0, std::memory_order_relaxed);
+    mLastReapNanos.store(0, std::memory_order_relaxed);
+    mMaxReapGapMicros.store(0, std::memory_order_relaxed);
+    mUnalignedPackets.store(0, std::memory_order_relaxed);
     mFramesSincePeakLog = 0;
     mLoggedPayloadWindow = false;
     mLoggedPayloadSignal = false;
@@ -830,6 +835,28 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
         return;
     }
 
+    // Timed before the status switch so a run of errors still shows up as thread activity.
+    // The gap between consecutive reaps is the health of the libusb event thread: the URB queue
+    // is kNumTransfers * kPacketsPerTransfer microframes deep (~48 ms at bInterval=1), and any
+    // stall longer than that means the controller ran out of queued buffers and stopped
+    // collecting audio entirely -- a loss no counter here can see, because those packets never
+    // reached the host.
+    {
+        const int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const int64_t previous = mLastReapNanos.exchange(nowNanos, std::memory_order_relaxed);
+        if (previous != 0 && nowNanos > previous) {
+            const auto gapMicros = static_cast<uint64_t>((nowNanos - previous) / 1000);
+            uint64_t previousMax = mMaxReapGapMicros.load(std::memory_order_relaxed);
+            while (gapMicros > previousMax &&
+                   !mMaxReapGapMicros.compare_exchange_weak(previousMax, gapMicros,
+                                                            std::memory_order_relaxed)) {
+            }
+        }
+        int64_t unset = 0;
+        mCaptureStartNanos.compare_exchange_strong(unset, nowNanos, std::memory_order_relaxed);
+    }
+
     switch (transfer->status) {
         case LIBUSB_TRANSFER_COMPLETED:
             mConsecutiveTransferErrors = 0;
@@ -964,6 +991,28 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
                 << " applied:" << applied[output]
                 << " changed:" << (changed[output] ? "true" : "false") << '\n';
         }
+    }
+    // Audio produced vs wall clock that produced it. drift_ms near 0 means every frame the mixer
+    // sent arrived exactly once. Negative means frames went missing (clicks); positive means
+    // frames arrived twice (an echo / doubled transient). Neither is visible in the packet
+    // counters below, which is why this line exists.
+    {
+        const int64_t startNanos = mCaptureStartNanos.load(std::memory_order_relaxed);
+        const auto frames = mFramesEmitted.load(std::memory_order_relaxed);
+        const int rate = openedSampleRate();
+        const int64_t audioMs = rate > 0 ? static_cast<int64_t>(frames) * 1000 / rate : 0;
+        int64_t wallMs = 0;
+        if (startNanos != 0) {
+            const int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            wallMs = (nowNanos - startNanos) / 1000000;
+        }
+        out << "capture_timing=frames:" << frames
+            << " audio_ms:" << audioMs
+            << " wall_ms:" << wallMs
+            << " drift_ms:" << (audioMs - wallMs)
+            << " max_reap_gap_us:" << mMaxReapGapMicros.load(std::memory_order_relaxed)
+            << " unaligned_packets:" << mUnalignedPackets.load(std::memory_order_relaxed) << '\n';
     }
     out << "transfers=completed:" << stats.packetsCompleted
         << " missed:" << stats.packetsMissed
@@ -1124,6 +1173,13 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
         return;
     }
 
+    // Non-zero here means frames straddle packet boundaries, so a lost packet can splice
+    // half-old/half-new bytes into one frame. Expected to stay 0 on the FLX10 (30-byte frames
+    // divide its 150/180-byte packets evenly).
+    if (length % frameSize != 0) {
+        mUnalignedPackets.fetch_add(1, std::memory_order_relaxed);
+    }
+
     mBytesSincePeakLog += length;
     uint64_t nonZeroBytes = 0;
     for (size_t i = 0; i < length; ++i) {
@@ -1200,6 +1256,7 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
         if (mCallback) {
             mCallback(mScratch.data(), completeFrames);
         }
+        mFramesEmitted.fetch_add(completeFrames, std::memory_order_relaxed);
 
         mFramesSincePeakLog += completeFrames;
         if (mFramesSincePeakLog >= static_cast<size_t>(

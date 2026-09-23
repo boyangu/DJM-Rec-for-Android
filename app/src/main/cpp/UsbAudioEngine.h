@@ -147,6 +147,39 @@ private:
     std::atomic<int32_t> mXRunCount{0};
     std::atomic<int64_t> mElapsedMillis{0};
 
+    // --- Recording-path instrumentation, reported by getDiagnosticSummary() ---------------
+    // These exist to tell three failure modes apart from a support report alone, without
+    // needing the audio file: a ring that is overrunning (dropped frames, heard as clicks),
+    // an encoder stalled behind the writer lock (the cause of the 5 s checkpoint clicks), and
+    // a writer that is simply slow.
+    std::atomic<int32_t> mRecordingGainDb{0};
+    std::atomic<uint64_t> mRingHighWaterBytes{0};
+    std::atomic<uint64_t> mEncoderLockWaitMaxMicros{0};
+    std::atomic<uint64_t> mEncoderLockWaitTotalMicros{0};
+    std::atomic<uint64_t> mWriteMaxMicros{0};
+    std::atomic<uint64_t> mCheckpointCount{0};
+    std::atomic<uint64_t> mCheckpointMaxMicros{0};
+    std::atomic<uint64_t> mCheckpointLastMicros{0};
+
+    /** Lock-free "keep the larger value" fold for the counters above. */
+    static void storeMaxU64(std::atomic<uint64_t>& target, uint64_t value) {
+        uint64_t previous = target.load(std::memory_order_relaxed);
+        while (value > previous &&
+               !target.compare_exchange_weak(previous, value, std::memory_order_relaxed)) {
+        }
+    }
+
+    /** Zeroes the instrumentation so each recording reports its own figures, not the session's. */
+    void resetRecordingInstrumentation() {
+        mRingHighWaterBytes.store(0, std::memory_order_relaxed);
+        mEncoderLockWaitMaxMicros.store(0, std::memory_order_relaxed);
+        mEncoderLockWaitTotalMicros.store(0, std::memory_order_relaxed);
+        mWriteMaxMicros.store(0, std::memory_order_relaxed);
+        mCheckpointCount.store(0, std::memory_order_relaxed);
+        mCheckpointMaxMicros.store(0, std::memory_order_relaxed);
+        mCheckpointLastMicros.store(0, std::memory_order_relaxed);
+    }
+
     // Meter state: a max-since-last-read accumulator, not a snapshot. Every realtime callback
     // folds its reading in with storeMax(); getLevels() drains it back to the floor. See the
     // getLevels() contract above for why.

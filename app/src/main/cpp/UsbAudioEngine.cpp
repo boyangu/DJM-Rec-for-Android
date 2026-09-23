@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <android/log.h>
+#include <chrono>
 #include <cstring>
 #include <sstream>
 
@@ -243,6 +244,10 @@ void UsbAudioEngine::onUsbIsoFrames(const int32_t* interleavedStereo, size_t fra
         if (written < bytesToWrite) {
             mXRunCount.fetch_add(1, std::memory_order_relaxed);
         }
+        // How close the ring came to overrunning. An xrun says frames were lost; this says how
+        // much headroom was left on every other callback, which is what tells us whether the
+        // encoder is comfortably keeping up or riding the edge.
+        storeMaxU64(mRingHighWaterBytes, static_cast<uint64_t>(mRingBuffer->availableToRead()));
     }
 }
 
@@ -381,6 +386,7 @@ bool UsbAudioEngine::startRecording(const std::string& path, ContainerFormat for
     mStopRequested.store(false, std::memory_order_relaxed);
     mPaused.store(false, std::memory_order_relaxed);
     mRingBuffer->reset();
+    resetRecordingInstrumentation();
     pinCaptureChannelPair();
     // Keep live history: monitoring is already writing the analyzer on the audio thread.
     mRecording.store(true, std::memory_order_release);
@@ -409,6 +415,7 @@ bool UsbAudioEngine::startRecordingFd(int fd, ContainerFormat format) {
     mStopRequested.store(false, std::memory_order_relaxed);
     mPaused.store(false, std::memory_order_relaxed);
     mRingBuffer->reset();
+    resetRecordingInstrumentation();
     pinCaptureChannelPair();
     // Keep live history: monitoring is already writing the analyzer on the audio thread.
     mRecording.store(true, std::memory_order_release);
@@ -448,6 +455,7 @@ int64_t UsbAudioEngine::checkpointRecording() {
     std::lock_guard<std::mutex> controlLock(mControlMutex);
     if (!mRecording.load()) return -1;
 
+    const auto checkpointStart = std::chrono::steady_clock::now();
     int64_t partBytes = -1;
     {
         std::lock_guard<std::mutex> writerLock(mWriterMutex);
@@ -463,7 +471,17 @@ int64_t UsbAudioEngine::checkpointRecording() {
     // capture callback kept filling the ring at the wire rate; every checkpoint interval the
     // ring overran and the dropped frames were audible as a periodic click. Same shape as
     // rollRecordingFd(), which already does its slow close() outside the writer lock.
-    if (!mWriter->syncToDisk()) {
+    const bool synced = mWriter->syncToDisk();
+    // Recorded whether or not the sync succeeded: a checkpoint that takes hundreds of
+    // milliseconds is the finding, and it is no longer supposed to block the encoder while it
+    // does. Compare against encoder lock_wait_max_us in the same report.
+    const auto checkpointMicros = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - checkpointStart).count());
+    mCheckpointCount.fetch_add(1, std::memory_order_relaxed);
+    mCheckpointLastMicros.store(checkpointMicros, std::memory_order_relaxed);
+    storeMaxU64(mCheckpointMaxMicros, checkpointMicros);
+    if (!synced) {
         mRecordingErrorCode.store(2, std::memory_order_release);
         return -1;
     }
@@ -573,13 +591,27 @@ void UsbAudioEngine::encoderThreadLoop() {
         const size_t framesRead = bytesRead / bytesPerFrame;
 
         if (framesRead > 0) {
+            // Time spent *waiting* for the writer lock is the number that matters: it is exactly
+            // the window in which nothing drains the ring while capture keeps filling it. This is
+            // what the 5 s checkpoint used to inflate to hundreds of milliseconds by holding the
+            // lock across fsync(), and it is how we confirm that is really fixed on a device.
+            const auto waitStart = std::chrono::steady_clock::now();
             std::lock_guard<std::mutex> writerLock(mWriterMutex);
+            const auto acquired = std::chrono::steady_clock::now();
+            const auto waitMicros = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(acquired - waitStart).count());
+            storeMaxU64(mEncoderLockWaitMaxMicros, waitMicros);
+            mEncoderLockWaitTotalMicros.fetch_add(waitMicros, std::memory_order_relaxed);
+
             if (!mWriter || !mWriter->writeFrames(chunk.data(), framesRead)) {
                 LOGE("Encoder write failed after %llu frames",
                      static_cast<unsigned long long>(framesEncoded));
                 mRecordingErrorCode.store(1, std::memory_order_release);
                 break;
             }
+            storeMaxU64(mWriteMaxMicros, static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - acquired).count()));
             framesEncoded += framesRead;
             mElapsedMillis.store(
                 static_cast<int64_t>(framesEncoded * 1000 / mFormat.sampleRate),
@@ -650,6 +682,20 @@ std::string UsbAudioEngine::getDiagnosticSummary() {
         << " peak_r:" << mRightPeakDb.load(std::memory_order_relaxed)
         << " rms_r:" << mRightRmsDb.load(std::memory_order_relaxed)
         << " clipping:" << (mClipping.load(std::memory_order_relaxed) ? "true" : "false");
+    out << "\ngain_db=" << mRecordingGainDb.load(std::memory_order_relaxed)
+        << " (a positive gain is a hard clamp with no limiter: it flat-tops peaks)";
+    // Ring headroom: xrun_count says frames were lost, this says how close every other callback
+    // came to losing them. high_water near capacity with xrun_count 0 is a warning, not an all-clear.
+    out << "\nring=capacity_bytes:" << (mRingBuffer ? mRingBuffer->capacity() : 0)
+        << " high_water_bytes:" << mRingHighWaterBytes.load(std::memory_order_relaxed);
+    // lock_wait_max_us is the window in which nothing drained the ring. It should now be
+    // microseconds; hundreds of milliseconds would mean a writer operation is still blocking it.
+    out << "\nencoder=lock_wait_max_us:" << mEncoderLockWaitMaxMicros.load(std::memory_order_relaxed)
+        << " lock_wait_total_ms:" << (mEncoderLockWaitTotalMicros.load(std::memory_order_relaxed) / 1000)
+        << " write_max_us:" << mWriteMaxMicros.load(std::memory_order_relaxed);
+    out << "\ncheckpoint=count:" << mCheckpointCount.load(std::memory_order_relaxed)
+        << " max_us:" << mCheckpointMaxMicros.load(std::memory_order_relaxed)
+        << " last_us:" << mCheckpointLastMicros.load(std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> writerLock(mWriterMutex);
         out << "\nwriter_bytes=" << (mWriter ? mWriter->bytesWritten() : 0);
@@ -681,6 +727,7 @@ void UsbAudioEngine::setWaveformEnabled(bool enabled) {
 } // namespace djmrec
 
 void djmrec::UsbAudioEngine::setRecordingGainDb(int gainDb) {
+    mRecordingGainDb.store(std::clamp(gainDb, -12, 24), std::memory_order_relaxed);
     mRecordingGainLinear.store(std::pow(10.0f, std::clamp(gainDb, -12, 24) / 20.0f),
                                std::memory_order_relaxed);
 }

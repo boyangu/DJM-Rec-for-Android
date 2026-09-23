@@ -240,6 +240,20 @@ private:
     int mActivityPacketCounter = 0;
     std::atomic<int> mResolvedChannelOffset{-1};
     std::atomic<bool> mChannelOffsetFrozen{false};
+
+    // --- Capture timing, reported by diagnosticSummary() ----------------------------------
+    // The decisive measurement for telling apart the two ways a recording can be wrong without
+    // any counter noticing. Compare the audio we produced against the wall clock that produced
+    // it: short means frames went missing (heard as clicks), long means frames arrived twice
+    // (heard as an echo or doubled transient). Neither shows up in packets_missed, because in
+    // both cases the packets the host never collected simply never existed.
+    std::atomic<uint64_t> mFramesEmitted{0};
+    std::atomic<int64_t> mCaptureStartNanos{0};
+    std::atomic<int64_t> mLastReapNanos{0};
+    /** Longest stall of the libusb event thread; beyond the URB queue depth, audio is lost. */
+    std::atomic<uint64_t> mMaxReapGapMicros{0};
+    /** Packets whose byte count was not a whole number of frames, i.e. carryover was in play. */
+    std::atomic<uint64_t> mUnalignedPackets{0};
     size_t mFramesSincePeakLog = 0;
     bool mLoggedPayloadWindow = false;
     bool mLoggedPayloadSignal = false;

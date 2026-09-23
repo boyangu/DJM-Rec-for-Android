@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.47.1 (2026-09-23)
+
+- Instrument the capture and recording path so a support report alone can tell apart the ways a
+  recording goes wrong. The new lines in the native snapshot:
+  - `capture_timing=... drift_ms:N` -- audio produced against the wall clock that produced it.
+    Near zero means every frame the mixer sent arrived exactly once. Negative means frames went
+    missing, which is heard as clicks. Positive means frames arrived twice, which is heard as an
+    echo or a doubled transient. Neither shows up in the packet counters, because packets the host
+    never collected never existed; this is the only measurement that sees them.
+  - `max_reap_gap_us` -- the longest stall of the USB event thread. Longer than the URB queue
+    (~48 ms) and the controller ran out of buffers and stopped collecting audio.
+  - `unaligned_packets` -- packets that were not a whole number of frames, so a lost packet could
+    splice half-old and half-new bytes into one frame. Expected to stay 0 on the DDJ-FLX10.
+  - `ring=capacity_bytes:.. high_water_bytes:..` -- how close the capture ring came to overrunning
+    on every callback, not just the ones that already lost frames.
+  - `encoder=lock_wait_max_us:..` -- the window in which nothing drained the ring. This is the
+    number the v0.46.0 checkpoint fix was aimed at, so it is now measurable rather than inferred.
+  - `checkpoint=count:.. max_us:.. last_us:..` -- how long the periodic flush to storage actually
+    takes on this device.
+  - `gain_db` -- the recording gain, since anything above 0 dB is a hard clamp with no limiter.
+- Add `scripts/find_echo.py`, which finds repeated or echoed audio in a recorded WAV and reports
+  the delay in USB packets, URBs and encoder chunks so a hit names the buffer responsible.
+
 ## v0.47.0 (2026-09-22)
 
 - Silence calls and notifications for the length of a recording. An incoming call is the thing
