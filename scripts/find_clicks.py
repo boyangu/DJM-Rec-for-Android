@@ -94,6 +94,31 @@ def hms(seconds):
     return "%d:%02d:%05.2f" % (int(seconds // 3600), int(seconds % 3600 // 60), seconds % 60)
 
 
+def musical_grid(gaps):
+    """Does the spacing fall on a musical grid rather than a machine's?
+
+    Electronic music has near-vertical attacks, which score as high curvature just like a real
+    splice does -- on a real DJ set this detector flagged 512 "clicks" whose spacings were
+    0.484 / 0.242 / 0.121 s: the beat, eighth and sixteenth at 124 BPM. Those were the track's
+    kicks and hats, not damage. A fault in the app is periodic on a clock or spread at random; it
+    has no reason to land on sixteenth notes, so if the gaps fit a grid, the finding is the music.
+    """
+    if len(gaps) < 8:
+        return None
+    best = None
+    for bpm10 in range(600, 2001):          # 60.0 to 200.0 BPM
+        sixteenth = 60.0 / (bpm10 / 10.0) / 4.0
+        fitted = 0
+        for gap in gaps:
+            steps = gap / sixteenth
+            if 0.5 <= steps <= 64 and abs(steps - round(steps)) <= 0.06:
+                fitted += 1
+        share = fitted / float(len(gaps))
+        if best is None or share > best[1]:
+            best = (bpm10 / 10.0, share)
+    return best if best and best[1] >= 0.7 else None
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -157,7 +182,17 @@ def main():
         lo = ordered_gaps[int(len(ordered_gaps) * 0.1)]
         hi = ordered_gaps[int(len(ordered_gaps) * 0.9)]
         print("\nmedian gap : %.3f s   (10th-90th percentile %.3f - %.3f)" % (mid, lo, hi))
-        if hi - lo < 0.5:
+        grid = musical_grid(gaps)
+        if grid:
+            bpm, share = grid
+            print("VERDICT: %.0f%% of these land on a musical grid at about %.1f BPM"
+                  % (share * 100, bpm))
+            print("         (beat %.3f s, sixteenth %.3f s). They are the track's own kicks and"
+                  % (60.0 / bpm, 60.0 / bpm / 4))
+            print("         hats, not damage: no fault in the app has a reason to happen on")
+            print("         sixteenth notes. Judge this file with find_echo.py and the app's")
+            print("         own diagnostic report instead.")
+        elif hi - lo < 0.5:
             print("VERDICT: strongly periodic at ~%.2f s." % mid)
             if abs(mid - 5.0) < 0.4:
                 print("  ~5 s matches the recording checkpoint (header patch + fsync).")
