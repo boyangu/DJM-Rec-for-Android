@@ -324,8 +324,9 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     mClaimedPlaybackInterface = -1;
     mPlaybackTransfers.clear();
     {
+        // Re-armed by startPioneerPlaybackSilence() when this session streams a keepalive.
         std::lock_guard<std::mutex> lock(mPlaybackMutex);
-        mPlaybackFrameRemainder = 0;
+        mPlaybackPacer.reset(config.requestedSampleRate, 8000, 1, false);
     }
     mPioneerFallbackStage = 0;
     mRouteFallbackRequested.store(false, std::memory_order_relaxed);
@@ -690,9 +691,14 @@ bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
     mPlaybackPacketsPerSecond = std::max(1, basePacketsPerSecond >> intervalShift);
     mPlaybackFrameBytes = mPlaybackOutChannels * mPlaybackOutSubframeBytes;
     mPlaybackMaxPacketSize = endpoint.maxPacketSize;
+    // Mirror capture packet sizes only when both endpoints run one packet per the same interval;
+    // otherwise an IN packet does not correspond to an OUT packet and nominal pacing is all we have.
+    const bool mirror = mCapturePacketsPerSecond == mPlaybackPacketsPerSecond;
     {
         std::lock_guard<std::mutex> lock(mPlaybackMutex);
-        mPlaybackFrameRemainder = 0;
+        mPlaybackPacer.reset(sampleRate, mPlaybackPacketsPerSecond,
+                             std::max(1, mPlaybackMaxPacketSize / std::max(1, mPlaybackFrameBytes)),
+                             mirror);
     }
 
     mPlaybackTransfers.reserve(kNumTransfers);
@@ -708,9 +714,10 @@ bool UsbIsoAudioSource::startPioneerPlaybackSilence(int sampleRate) {
     }
     mPioneerFallbackStage = 1;
     LOGI("%s fallback strategy 1: streaming silence to endpoint 0x%02x at %d Hz "
-         "(%dch x %d bytes, %d packets/sec, maxPacket=%d)",
+         "(%dch x %d bytes, %d packets/sec, maxPacket=%d, pacing=%s)",
          profileName(), endpoint.address, sampleRate, mPlaybackOutChannels,
-         mPlaybackOutSubframeBytes, mPlaybackPacketsPerSecond, mPlaybackMaxPacketSize);
+         mPlaybackOutSubframeBytes, mPlaybackPacketsPerSecond, mPlaybackMaxPacketSize,
+         mirror ? "mirrored from capture" : "nominal");
     return true;
 }
 
@@ -725,9 +732,7 @@ bool UsbIsoAudioSource::submitPlaybackTransfer(libusb_transfer* transfer) {
     {
         std::lock_guard<std::mutex> lock(mPlaybackMutex);
         for (int packetIndex = 0; packetIndex < transfer->num_iso_packets; ++packetIndex) {
-            mPlaybackFrameRemainder += static_cast<uint64_t>(sampleRate);
-            const int frames = static_cast<int>(mPlaybackFrameRemainder / mPlaybackPacketsPerSecond);
-            mPlaybackFrameRemainder %= static_cast<uint64_t>(mPlaybackPacketsPerSecond);
+            const int frames = mPlaybackPacer.nextPlaybackFrames();
             const int packetLength = frames * mPlaybackFrameBytes;
             if (packetLength <= 0 || packetLength > mPlaybackMaxPacketSize) {
                 LOGE("Pioneer playback packet %d exceeds endpoint capacity %d", packetLength,
@@ -876,6 +881,11 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
             // is a synchronous control transfer -- so give up and let the Kotlin side reopen).
             mPacketsMissed.fetch_add(static_cast<uint64_t>(transfer->num_iso_packets),
                                      std::memory_order_relaxed);
+            {
+                // Keep the OUT side moving at the nominal rate across the hole.
+                std::lock_guard<std::mutex> lock(mPlaybackMutex);
+                for (int i = 0; i < transfer->num_iso_packets; ++i) mPlaybackPacer.noteCapturePacket(0);
+            }
             if (const size_t held = mZeroPacketFilter.interrupt()) demuxAndEmit(mZeroPacket.data(), held);
             mCarryover.clear(); // See the per-packet miss path below for why.
             if (++mConsecutiveTransferErrors >= kMaxConsecutiveTransferErrors) {
@@ -892,6 +902,20 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
     }
 
     const size_t frameSize = static_cast<size_t>(mConfig.subframeSize) * mConfig.totalChannels;
+    {
+        // Implicit feedback: each IN packet's frame count sizes a future OUT keepalive packet.
+        // Counted from actual_length, so the device's own padding packets count too -- they are
+        // part of the cadence it is telling us to follow.
+        std::lock_guard<std::mutex> lock(mPlaybackMutex);
+        if (mPlaybackPacer.mirroring()) {
+            for (int i = 0; i < transfer->num_iso_packets; ++i) {
+                const libusb_iso_packet_descriptor& packet = transfer->iso_packet_desc[i];
+                const bool ok = packet.status == LIBUSB_TRANSFER_COMPLETED && frameSize > 0;
+                mPlaybackPacer.noteCapturePacket(
+                    ok ? static_cast<int>(packet.actual_length / frameSize) : 0);
+            }
+        }
+    }
     for (int i = 0; i < transfer->num_iso_packets; ++i) {
         const libusb_iso_packet_descriptor& packet = transfer->iso_packet_desc[i];
         if (packet.status != LIBUSB_TRANSFER_COMPLETED) {
@@ -981,7 +1005,16 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
         << " override:" << mConfig.endpointRateOverride
         << " manual_format:" << (mConfig.allowFormatMismatch ? "true" : "false")
         << " claimed_if:" << mClaimedPlaybackInterface
-        << " transfers:" << mPlaybackTransfers.size() << '\n'
+        << " transfers:" << mPlaybackTransfers.size() << '\n';
+    {
+        std::lock_guard<std::mutex> lock(mPlaybackMutex);
+        out << "playback_pacing=" << (mPlaybackPacer.mirroring() ? "mirrored" : "nominal")
+            << " mirrored_packets:" << mPlaybackPacer.mirroredPackets()
+            << " nominal_packets:" << mPlaybackPacer.nominalPackets()
+            << " fifo_depth:" << mPlaybackPacer.queued()
+            << " fifo_overflow:" << mPlaybackPacer.overflowDrops() << '\n';
+    }
+    out
         << "route_fallback_stage=" << mPioneerFallbackStage.load(std::memory_order_relaxed) << '\n';
 
     if (mMixerProfile && mMixerProfile->routeReadMode == PioneerRouteReadMode::None) {

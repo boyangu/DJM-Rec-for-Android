@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "PioneerMixerProfiles.h"
+#include "ImplicitFeedbackPacer.h"
 #include "ZeroPacketFilter.h"
 
 struct libusb_context;
@@ -207,10 +208,10 @@ private:
     int mPlaybackOutChannels = 0;
     int mPlaybackOutSubframeBytes = 0;
     bool mUseEndpointSampleRate = false;
-    // Guards mPlaybackFrameRemainder: the initial submit loop on the control thread can overlap
-    // with the first completions arriving on the event thread.
-    std::mutex mPlaybackMutex;
-    uint64_t mPlaybackFrameRemainder = 0;
+    // Guards mPlaybackPacer: the initial submit loop on the control thread can overlap with the
+    // first completions arriving on the event thread.
+    mutable std::mutex mPlaybackMutex;
+    ImplicitFeedbackPacer mPlaybackPacer;
     std::atomic<int> mPioneerFallbackStage{0};
     std::atomic<bool> mRouteFallbackRequested{false};
     // -999 means no request was sent; libusb errors use -1 through -99.

@@ -10,6 +10,16 @@
   carries signal again. Two zero packets in a row are real silence and are kept in full. The new
   `zero_packets_dropped` field on the `capture_timing` line counts how often it fires. The filter
   runs on every mixer profile, since any of them could do the same.
+- Pace the silent playback keepalive the way the device asks. Every Pioneer DJ / AlphaTheta USB
+  audio device is an implicit-feedback design: the capture stream is the clock, and the host is
+  meant to send each playback packet with as many frames as it just received on capture. Linux
+  does this for all of them; this app sent playback at a fixed nominal rate instead, feeding the
+  device a clock that is not its own. It now mirrors the capture packet sizes, falling back to the
+  nominal rate only until the first capture packets arrive. Applies to every profile that needs
+  playback traffic (DJM-A9, DJM-900NXS2, DJM-750MK2, DDJ-FLX10 and others). A new
+  `playback_pacing=` diagnostic line shows how many packets were mirrored. This is the suspected
+  root cause of the FLX10's padding packets; `zero_packets_dropped` on a new recording will show
+  whether it was.
 - `scripts/find_clicks.py` now checks for these zero holes before anything else. Its musical-grid
   test had called them music: a hole every ~0.12 s lands on a sixteenth note at ~124 BPM.
 - Add `scripts/repair_zero_holes.py`, which removes the holes from recordings made before this
