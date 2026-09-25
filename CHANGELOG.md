@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Fix the clicks and ticks in DDJ-FLX10 recordings. The FLX10 inserts one extra USB packet of pure
+  digital zero into the capture stream every ~0.12 s, which punches a 6-frame hole to silence into
+  the waveform, 8 or so per second through a loud track. Measured against the source track: the
+  audio either side of each hole runs on continuously, so nothing was missing, only added. The
+  capture now withholds an all-zero packet that follows signal and discards it if the next packet
+  carries signal again. Two zero packets in a row are real silence and are kept in full. The new
+  `zero_packets_dropped` field on the `capture_timing` line counts how often it fires. The filter
+  runs on every mixer profile, since any of them could do the same.
+- `scripts/find_clicks.py` now checks for these zero holes before anything else. Its musical-grid
+  test had called them music: a hole every ~0.12 s lands on a sixteenth note at ~124 BPM.
+- Add `scripts/repair_zero_holes.py`, which removes the holes from recordings made before this
+  fix. Because the holes were inserted rather than cut in, the repair is lossless.
+
 ## v0.47.1 (2026-09-23)
 
 - Instrument the capture and recording path so a support report alone can tell apart the ways a

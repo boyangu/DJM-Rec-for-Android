@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "PioneerMixerProfiles.h"
+#include "ZeroPacketFilter.h"
 
 struct libusb_context;
 struct libusb_device_handle;
@@ -235,6 +236,8 @@ private:
     std::vector<uint8_t> mCarryover; // partial-frame bytes carried over between packets
     std::vector<uint8_t> mWorking;   // scratch: carryover + newest packet, reused per call
     std::vector<int32_t> mScratch;   // reusable decode buffer, grown as needed
+    ZeroPacketFilter mZeroPacketFilter;
+    std::vector<uint8_t> mZeroPacket; // maxPacketSize zero bytes, re-emitted when a withheld packet was real silence
     std::vector<uint32_t> mPairPeaks;
     ChannelActivity mChannelActivity;
     int mActivityPacketCounter = 0;

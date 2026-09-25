@@ -35,6 +35,9 @@ MAX_CANDIDATES = 20000
 # higher percentile because on a badly damaged file the clicks themselves would contaminate the
 # tail; 1% of a recording is never clicks.
 THRESHOLD_RATIO = 3.0
+# Longest run of exact digital zero, on every channel at once, still counted as a hole punched into
+# the signal rather than a real pause. One high-speed USB packet is 5-6 frames at 44.1/48 kHz.
+MAX_HOLE_FRAMES = 64
 
 
 def analyse(path):
@@ -59,12 +62,23 @@ def analyse(path):
         peak = 0.0
         index = 0
         counter = 0
+        silent_frame = bytes(step)
+        zero_run = 0
+        signal_before_run = False
+        holes = []  # (first frame, length) of short exact-zero runs cut into signal
 
         while True:
             raw = w.readframes(CHUNK_FRAMES)
             if not raw:
                 break
             for i in range(0, len(raw) - step + 1, step):
+                if raw[i:i + step] == silent_frame:
+                    zero_run += 1
+                else:
+                    if signal_before_run and 0 < zero_run <= MAX_HOLE_FRAMES:
+                        holes.append((index - zero_run, zero_run))
+                    zero_run = 0
+                    signal_before_run = True
                 # Left channel only: a dropout hits both channels at the same instant.
                 value = int.from_bytes(raw[i:i + width], 'little', signed=True) / full
                 if index >= 2:
@@ -84,10 +98,10 @@ def analyse(path):
                 index += 1
 
     if not scale_samples:
-        return rate, frames, 0.0, 0.0, []
+        return rate, frames, 0.0, 0.0, [], holes
     scale_samples.sort()
     p99 = scale_samples[int(len(scale_samples) * 0.99)]
-    return rate, frames, p99, peak, candidates
+    return rate, frames, p99, peak, candidates, holes
 
 
 def hms(seconds):
@@ -98,10 +112,13 @@ def musical_grid(gaps):
     """Does the spacing fall on a musical grid rather than a machine's?
 
     Electronic music has near-vertical attacks, which score as high curvature just like a real
-    splice does -- on a real DJ set this detector flagged 512 "clicks" whose spacings were
-    0.484 / 0.242 / 0.121 s: the beat, eighth and sixteenth at 124 BPM. Those were the track's
-    kicks and hats, not damage. A fault in the app is periodic on a clock or spread at random; it
-    has no reason to land on sixteenth notes, so if the gaps fit a grid, the finding is the music.
+    splice does, so a set can produce hundreds of "clicks" spaced on the beat, eighth and
+    sixteenth. If the gaps fit a grid, the finding is probably the music.
+
+    Only probably: a clock period can fit a grid too. On the DDJ-FLX10 the real damage -- a
+    padding packet every ~0.12 s -- sat on a sixteenth at ~124 BPM and this test called it music.
+    main() rules out exact-zero holes before it ever gets here; any other periodic fault near a
+    tempo's subdivision still needs checking against the source track.
     """
     if len(gaps) < 8:
         return None
@@ -123,12 +140,36 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 1
-    rate, frames, p99, peak, candidates = analyse(sys.argv[1])
+    rate, frames, p99, peak, candidates, holes = analyse(sys.argv[1])
     if frames < rate:
         print("too short to analyse")
         return 1
     if p99 <= 0.0:
         print("the file is digital silence end to end")
+        return 0
+
+    # Checked before anything else, because the curvature/grid logic below misreads this fault.
+    # A capture that inserts a padding packet every ~0.12 s produces clicks whose spacing fits a
+    # sixteenth-note grid at ~124 BPM, and the grid test then calls them music. Exact zero on every
+    # channel for a few frames in the middle of a loud passage is never music.
+    if len(holes) >= 3:
+        lengths = {}
+        for _, length in holes:
+            lengths[length] = lengths.get(length, 0) + 1
+        common = sorted(lengths.items(), key=lambda item: -item[1])[:3]
+        print("zero holes : %d runs of exact digital zero inside signal (lengths: %s)"
+              % (len(holes), ", ".join("%d frames x%d" % item for item in common)))
+        for n, (position, length) in enumerate(holes[:12], 1):
+            print("  %3d   %s   %d frames" % (n, hms(position / float(rate)), length))
+        if len(holes) > 12:
+            print("  ... %d more" % (len(holes) - 12))
+        span = (holes[-1][0] - holes[0][0]) / float(rate)
+        if span > 0:
+            print("  one every %.3f s on average" % (span / (len(holes) - 1)))
+        print("VERDICT: these are the clicks. Each is a short block of silence cut into the audio,")
+        print("         the size of one USB packet: the device (or the capture) padded the stream.")
+        print("         Recordings from before the fix can be repaired losslessly with")
+        print("         repair_zero_holes.py, since the audio either side is continuous.")
         return 0
 
     threshold = p99 * THRESHOLD_RATIO

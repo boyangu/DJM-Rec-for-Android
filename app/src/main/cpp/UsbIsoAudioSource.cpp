@@ -369,6 +369,8 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     mPairPeaks.assign(static_cast<size_t>((config.totalChannels + 1) / 2), 0);
     mCarryover.clear();
     mCarryover.reserve(static_cast<size_t>(config.subframeSize) * config.totalChannels);
+    mZeroPacketFilter.reset();
+    mZeroPacket.assign(static_cast<size_t>(std::max(0, config.maxPacketSize)), 0);
 
     libusb_init_option options[1]{};
     options[0].option = LIBUSB_OPTION_NO_DEVICE_DISCOVERY;
@@ -874,6 +876,7 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
             // is a synchronous control transfer -- so give up and let the Kotlin side reopen).
             mPacketsMissed.fetch_add(static_cast<uint64_t>(transfer->num_iso_packets),
                                      std::memory_order_relaxed);
+            if (const size_t held = mZeroPacketFilter.interrupt()) demuxAndEmit(mZeroPacket.data(), held);
             mCarryover.clear(); // See the per-packet miss path below for why.
             if (++mConsecutiveTransferErrors >= kMaxConsecutiveTransferErrors) {
                 LOGE("USB capture transfer failed %d times in a row (last status %d)",
@@ -888,10 +891,12 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
             return;
     }
 
+    const size_t frameSize = static_cast<size_t>(mConfig.subframeSize) * mConfig.totalChannels;
     for (int i = 0; i < transfer->num_iso_packets; ++i) {
         const libusb_iso_packet_descriptor& packet = transfer->iso_packet_desc[i];
         if (packet.status != LIBUSB_TRANSFER_COMPLETED) {
             mPacketsMissed.fetch_add(1, std::memory_order_relaxed);
+            if (const size_t held = mZeroPacketFilter.interrupt()) demuxAndEmit(mZeroPacket.data(), held);
             // Bytes held back from before the gap can no longer be completed by the bytes that
             // follow it: splicing the two halves together fabricates one frame of half-old,
             // half-new data, which decodes to a full-scale garbage sample rather than the much
@@ -914,7 +919,11 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
         mBytesReceived.fetch_add(packet.actual_length, std::memory_order_relaxed);
         {
             unsigned char* data = libusb_get_iso_packet_buffer_simple(transfer, i);
-            demuxAndEmit(data, packet.actual_length);
+            const bool aligned = mCarryover.empty() && frameSize > 0 &&
+                                 packet.actual_length % frameSize == 0;
+            const auto step = mZeroPacketFilter.push(data, packet.actual_length, aligned);
+            if (step.releaseZeroBytes > 0) demuxAndEmit(mZeroPacket.data(), step.releaseZeroBytes);
+            if (step.emitCurrent) demuxAndEmit(data, packet.actual_length);
         }
     }
 
@@ -1012,7 +1021,8 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
             << " wall_ms:" << wallMs
             << " drift_ms:" << (audioMs - wallMs)
             << " max_reap_gap_us:" << mMaxReapGapMicros.load(std::memory_order_relaxed)
-            << " unaligned_packets:" << mUnalignedPackets.load(std::memory_order_relaxed) << '\n';
+            << " unaligned_packets:" << mUnalignedPackets.load(std::memory_order_relaxed)
+            << " zero_packets_dropped:" << mZeroPacketFilter.droppedPackets() << '\n';
     }
     out << "transfers=completed:" << stats.packetsCompleted
         << " missed:" << stats.packetsMissed
