@@ -161,6 +161,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
         PreferenceSwitch("Live waveform", "RGB: red bass, green mids, blue highs. Mixed frequencies blend colors.", waveform, viewModel::setWaveformEnabled)
         PreferenceSwitch("Smooth waveform", "Scroll at the display frame rate. Turn off to reduce graphics work.", smooth, viewModel::setSmoothWaveform)
         Text("During a set", style = MaterialTheme.typography.titleLarge)
+        com.audiopro.djmrec.ui.components.SetPreflightBanner(viewModel)
         PreferenceSwitch(
             "Silence calls and notifications",
             "Puts the phone in Do Not Disturb for the length of each recording and restores your " +

@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -82,12 +83,9 @@ fun outstandingSetChecks(
 }
 
 /**
- * A one-line prompt shown before recording when the phone is not set up for a long set, opening a
- * dialog that explains each item and fixes it in one tap.
- *
- * Deliberately not a blocking dialog: it must never stand between the user and the record button
- * when a set is about to start. It is dismissible for the session and disappears on its own once
- * there is nothing left to do.
+ * The "set up your phone for a long set" row in Settings > During a set, opening a dialog that
+ * explains each outstanding item and fixes it in one tap. Once nothing is outstanding it stays,
+ * saying so, so there is always one place to check.
  */
 @Composable
 fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) {
@@ -95,7 +93,6 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
     val keepScreenOn by viewModel.keepScreenOn.collectAsState()
     val batterySaverScreen by viewModel.batterySaverScreen.collectAsState()
     val doNotDisturbWanted by viewModel.doNotDisturbWhileRecording.collectAsState()
-    var dismissed by rememberSaveable { mutableStateOf(false) }
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
 
     // Both system grants are changed in Android settings, which gives the app no callback, so
@@ -176,14 +173,10 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
             },
             confirmButton = { TextButton(onClick = { detailsOpen = false }) { Text("Done") } },
             dismissButton = {
-                if (outstanding.isNotEmpty()) {
-                    TextButton(onClick = { detailsOpen = false; dismissed = true }) { Text("Not now") }
-                }
             },
         )
     }
 
-    if (dismissed || outstanding.isEmpty()) return
     Surface(
         modifier = modifier.fillMaxWidth().clickable { detailsOpen = true },
         shape = RoundedCornerShape(14.dp),
@@ -194,16 +187,22 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Icon(Icons.Default.NotificationsOff, null, Modifier.size(18.dp), tint = TextSecondary)
+            Icon(
+                if (outstanding.isEmpty()) Icons.Default.CheckCircle else Icons.Default.NotificationsOff,
+                null, Modifier.size(18.dp), tint = TextSecondary
+            )
             Text(
-                if (outstanding.size == 1) outstanding.first().title
-                else "Set up your phone for a long set",
+                when (outstanding.size) {
+                    0 -> "Your phone is set up for a long set"
+                    1 -> outstanding.first().title
+                    else -> "Set up your phone for a long set"
+                },
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyMedium,
             )
-            TextButton(onClick = { detailsOpen = true }) { Text("Set up") }
+            TextButton(onClick = { detailsOpen = true }) { Text(if (outstanding.isEmpty()) "Details" else "Set up") }
         }
     }
 }
