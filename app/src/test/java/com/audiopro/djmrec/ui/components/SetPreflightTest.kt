@@ -11,8 +11,11 @@ class SetPreflightTest {
         doNotDisturbAccessGranted: Boolean = false,
         batteryUnrestricted: Boolean = false,
         keepScreenOn: Boolean = false,
+        batterySaverScreen: Boolean = false,
+        systemBatterySaverOn: Boolean = true,
     ) = outstandingSetChecks(
-        doNotDisturbWanted, doNotDisturbAccessGranted, batteryUnrestricted, keepScreenOn
+        doNotDisturbWanted, doNotDisturbAccessGranted, batteryUnrestricted, keepScreenOn,
+        batterySaverScreen, systemBatterySaverOn
     )
 
     @Test
@@ -53,6 +56,17 @@ class SetPreflightTest {
             listOf(SetCheck.DoNotDisturb, SetCheck.ScreenAwake),
             checks(batteryUnrestricted = true)
         )
+    }
+
+    @Test
+    fun `the battery saver screen covers keeping the screen awake`() {
+        assertTrue(SetCheck.ScreenAwake !in checks(batterySaverScreen = true))
+    }
+
+    @Test
+    fun `system Battery Saver is offered last, only while it is off`() {
+        assertEquals(SetCheck.SystemBatterySaver, checks(systemBatterySaverOn = false).last())
+        assertTrue(SetCheck.SystemBatterySaver !in checks(systemBatterySaverOn = true))
     }
 
     @Test

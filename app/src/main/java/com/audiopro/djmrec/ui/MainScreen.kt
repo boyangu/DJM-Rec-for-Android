@@ -75,9 +75,15 @@ fun MainScreen(viewModel: MainViewModel) {
     val scope = rememberCoroutineScope()
     var selectedDestination by rememberSaveable { mutableStateOf(Destination.RECORDING) }
     var availableUpdate by remember { mutableStateOf<AppUpdate?>(null) }
+    val saverActive by viewModel.saverActive.collectAsState()
 
     LaunchedEffect(Unit) {
         availableUpdate = UpdateChecker.check(context.applicationContext)
+    }
+
+    if (saverActive) {
+        BatterySaverScreen(viewModel)
+        return
     }
 
     recoveryNotice?.let { message ->

@@ -1,7 +1,5 @@
 package com.audiopro.djmrec.ui
 
-import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -40,7 +37,6 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
     val elapsed by viewModel.elapsedMillis.collectAsState()
     val waveform by viewModel.waveformEnabled.collectAsState()
     val smooth by viewModel.smoothWaveform.collectAsState()
-    val keepScreenOn by viewModel.keepScreenOn.collectAsState()
     val confirmStop by viewModel.confirmStop.collectAsState()
     val health by viewModel.recordingHealth.collectAsState()
     val format by viewModel.selectedFormat.collectAsState()
@@ -52,15 +48,8 @@ fun RecorderScreen(viewModel: MainViewModel, onOpenLibrary: () -> Unit = {}) {
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
     var inputsOpen by rememberSaveable { mutableStateOf(false) }
     val connectionNotice by viewModel.connectionNotice.collectAsState()
-    val context = LocalContext.current
     val active = state is RecordingState.Recording || state is RecordingState.Paused
     val signal by viewModel.signalPresent.collectAsState()
-    DisposableEffect(keepScreenOn, active, state) {
-        val window = (context as? ComponentActivity)?.window
-        if (keepScreenOn && (active || state is RecordingState.Monitoring))
-            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
-    }
     if (inputsOpen) InputPicker(viewModel) { inputsOpen = false }
     if (setupOpen) ModalBottomSheet(onDismissRequest = { setupOpen = false },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {

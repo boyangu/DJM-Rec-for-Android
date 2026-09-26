@@ -40,6 +40,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val waveform by viewModel.waveformEnabled.collectAsState()
     val smooth by viewModel.smoothWaveform.collectAsState()
     val keepScreen by viewModel.keepScreenOn.collectAsState()
+    val batterySaverScreen by viewModel.batterySaverScreen.collectAsState()
     val doNotDisturb by viewModel.doNotDisturbWhileRecording.collectAsState()
     val confirm by viewModel.confirmStop.collectAsState()
     val silenceHold by viewModel.silenceHoldMs.collectAsState()
@@ -195,6 +196,13 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 }
             }
         }
+        PreferenceSwitch(
+            "Battery saver screen",
+            "Keeps the screen on for the whole recording while Set Recorder is in front. After " +
+                "30 seconds without a touch it dims to a black screen with the recording timer " +
+                "and the time, at the display's lowest refresh rate. Tap to go back.",
+            batterySaverScreen, viewModel::setBatterySaverScreen
+        )
         PreferenceSwitch("Keep recorder screen awake", "Keeps the meters and waveform visible while monitoring or recording. Capture also works with the screen locked.", keepScreen, viewModel::setKeepScreenOn)
         Text("Background recording", style = MaterialTheme.typography.titleLarge)
         val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager

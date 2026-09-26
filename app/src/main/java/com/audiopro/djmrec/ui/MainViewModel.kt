@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -102,6 +103,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val smoothWaveform = MutableStateFlow(prefs.getBoolean("smooth_waveform", true))
     val confirmStop = MutableStateFlow(prefs.getBoolean("confirm_stop", true))
 
+    // On by default: during a recording it keeps the screen from sleeping while the app is in
+    // front, and dims to a black clock after SAVER_IDLE_MS without a touch.
+    val batterySaverScreen = MutableStateFlow(prefs.getBoolean("battery_saver_screen", true))
+    fun setBatterySaverScreen(value: Boolean) {
+        prefs.edit().putBoolean("battery_saver_screen", value).apply()
+        batterySaverScreen.value = value
+        updateSaver()
+    }
+
+    private val _saverActive = MutableStateFlow(false)
+    /** True while the battery saver screen is showing in place of the app. */
+    val saverActive: StateFlow<Boolean> = _saverActive.asStateFlow()
+    private var lastInteractionAt = SystemClock.elapsedRealtime()
+    private var appResumed = false
+
+    /** Any touch or key on the activity: leave the saver screen and restart the idle count. */
+    fun noteUserInteraction() {
+        lastInteractionAt = SystemClock.elapsedRealtime()
+        updateSaver()
+    }
+
+    fun setAppResumed(resumed: Boolean) {
+        appResumed = resumed
+        lastInteractionAt = SystemClock.elapsedRealtime()
+        updateSaver()
+    }
+
+    private fun updateSaver() {
+        val state = _recordingState.value
+        val show = shouldShowSaver(
+            enabled = batterySaverScreen.value,
+            recordingActive = state is RecordingState.Recording || state is RecordingState.Paused,
+            appResumed = appResumed,
+            idleMillis = SystemClock.elapsedRealtime() - lastInteractionAt,
+        )
+        if (show == _saverActive.value) return
+        _saverActive.value = show
+        // Nothing on the saver screen needs levels or the waveform: let the service drop to its
+        // background update rate, exactly as when the app is not visible at all.
+        boundService?.setVisualsVisible(uiVisible && !show, waveformVisible)
+    }
+
     fun setKeepScreenOn(value: Boolean) { prefs.edit().putBoolean("keep_screen_on", value).apply(); keepScreenOn.value = value }
     fun setDoNotDisturbWhileRecording(value: Boolean) {
         prefs.edit().putBoolean(RecordingService.KEY_DND_WHILE_RECORDING, value).apply()
@@ -190,12 +233,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUiVisible(visible: Boolean) {
         uiVisible = visible
-        boundService?.setVisualsVisible(uiVisible, waveformVisible)
+        boundService?.setVisualsVisible(uiVisible && !_saverActive.value, waveformVisible)
     }
 
     fun setWaveformVisible(visible: Boolean) {
         waveformVisible = visible
-        boundService?.setVisualsVisible(uiVisible, waveformVisible)
+        boundService?.setVisualsVisible(uiVisible && !_saverActive.value, waveformVisible)
     }
 
     private val connection = object : ServiceConnection {
@@ -204,12 +247,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             boundService = service
             isBound = true
             _recordingState.value = service.state.value
-            service.setVisualsVisible(uiVisible, waveformVisible)
+            service.setVisualsVisible(uiVisible && !_saverActive.value, waveformVisible)
             service.setWaveformEnabled(_waveformEnabled.value)
             service.setRecordingGainDb(_recordingGainDb.value)
             service.setSilenceHoldMs(_silenceHoldMs.value)
             viewModelScope.launch { service.saving.collect { saving.value = it } }
-            viewModelScope.launch { service.state.collect { _recordingState.value = it } }
+            viewModelScope.launch { service.state.collect { _recordingState.value = it; updateSaver() } }
             viewModelScope.launch { service.levels.collect { _levels.value = it } }
             viewModelScope.launch { service.elapsedMillis.collect { _elapsedMillis.value = it } }
             viewModelScope.launch { service.waveformBins.collect { _waveformBins.value = it } }
@@ -233,6 +276,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         context.bindService(
             Intent(context, RecordingService::class.java), connection, Context.BIND_AUTO_CREATE
         )
+        // The idle countdown has no event of its own; a once-a-second check is plenty for 30 s.
+        viewModelScope.launch {
+            while (true) {
+                delay(1_000L)
+                updateSaver()
+            }
+        }
         viewModelScope.launch {
             var activeDeviceKey: String? = null
             deviceState.collect { device ->

@@ -49,6 +49,13 @@ enum class SetCheck(val title: String, val detail: String, val action: String) {
             "waveform visible while you play instead of having to wake the phone to check them.",
         "Keep the screen on",
     ),
+    SystemBatterySaver(
+        "Turn on Battery Saver",
+        "Android's own Battery Saver trims background work across the whole phone. Set Recorder " +
+            "cannot switch it on itself; turn it on for the set and the recording carries on as " +
+            "normal.",
+        "Open Battery Saver settings",
+    ),
 }
 
 /**
@@ -63,11 +70,15 @@ fun outstandingSetChecks(
     doNotDisturbAccessGranted: Boolean,
     batteryUnrestricted: Boolean,
     keepScreenOn: Boolean,
+    batterySaverScreen: Boolean = false,
+    systemBatterySaverOn: Boolean = true,
 ): List<SetCheck> = buildList {
     // Nothing to nag about if the user has deliberately turned the feature off.
     if (doNotDisturbWanted && !doNotDisturbAccessGranted) add(SetCheck.DoNotDisturb)
     if (!batteryUnrestricted) add(SetCheck.BatteryUnrestricted)
-    if (!keepScreenOn) add(SetCheck.ScreenAwake)
+    // The battery saver screen already keeps the screen on for the length of a recording.
+    if (!keepScreenOn && !batterySaverScreen) add(SetCheck.ScreenAwake)
+    if (!systemBatterySaverOn) add(SetCheck.SystemBatterySaver)
 }
 
 /**
@@ -82,6 +93,7 @@ fun outstandingSetChecks(
 fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val keepScreenOn by viewModel.keepScreenOn.collectAsState()
+    val batterySaverScreen by viewModel.batterySaverScreen.collectAsState()
     val doNotDisturbWanted by viewModel.doNotDisturbWhileRecording.collectAsState()
     var dismissed by rememberSaveable { mutableStateOf(false) }
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
@@ -90,12 +102,14 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
     // re-read them every time the screen comes back to the foreground.
     var doNotDisturbAccess by remember { mutableStateOf(hasDoNotDisturbAccess(context)) }
     var batteryUnrestricted by remember { mutableStateOf(hasBatteryExemption(context)) }
+    var systemBatterySaverOn by remember { mutableStateOf(isSystemBatterySaverOn(context)) }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 doNotDisturbAccess = hasDoNotDisturbAccess(context)
                 batteryUnrestricted = hasBatteryExemption(context)
+                systemBatterySaverOn = isSystemBatterySaverOn(context)
             }
         }
         owner.lifecycle.addObserver(observer)
@@ -110,6 +124,7 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
     ) {
         doNotDisturbAccess = hasDoNotDisturbAccess(context)
         batteryUnrestricted = hasBatteryExemption(context)
+        systemBatterySaverOn = isSystemBatterySaverOn(context)
     }
 
     val outstanding = outstandingSetChecks(
@@ -117,6 +132,8 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
         doNotDisturbAccessGranted = doNotDisturbAccess,
         batteryUnrestricted = batteryUnrestricted,
         keepScreenOn = keepScreenOn,
+        batterySaverScreen = batterySaverScreen,
+        systemBatterySaverOn = systemBatterySaverOn,
     )
 
     fun resolve(check: SetCheck) {
@@ -130,6 +147,8 @@ fun SetPreflightBanner(viewModel: MainViewModel, modifier: Modifier = Modifier) 
                 )
             )
             SetCheck.ScreenAwake -> viewModel.setKeepScreenOn(true)
+            SetCheck.SystemBatterySaver ->
+                systemSettings.launch(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))
         }
     }
 
@@ -197,3 +216,7 @@ private fun hasBatteryExemption(context: Context): Boolean = runCatching {
     (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
         .isIgnoringBatteryOptimizations(context.packageName)
 }.getOrDefault(false)
+
+private fun isSystemBatterySaverOn(context: Context): Boolean = runCatching {
+    (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode
+}.getOrDefault(true)

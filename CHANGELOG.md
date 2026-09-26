@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add a battery saver screen for long sets. While recording with Set Recorder in front, the
+  screen no longer sleeps, and after 30 seconds without a touch it drops to a black screen showing
+  a red recording dot with the elapsed time (`mm:ss`, `h:mm:ss` past an hour), the time of day in
+  the phone's own format, and a faint "Battery saver mode" label. While it shows, the app does
+  everything Android lets an app do to save power: brightness down to 2% for its own window, the
+  display's slowest refresh rate, system bars hidden, one redraw a second, and the service stops
+  meter and waveform work. The block moves slightly every minute to avoid burn-in. Any tap returns
+  to the live screen. On by default; toggle under Settings > During a set.
+- The pre-set checklist offers a shortcut to Android's system Battery Saver when it is off (an app
+  cannot switch it on itself), and no longer asks to keep the screen awake when the battery saver
+  screen already does.
 - Fix the clicks and ticks in DDJ-FLX10 recordings. The FLX10 inserts one extra USB packet of pure
   digital zero into the capture stream every ~0.12 s, which punches a 6-frame hole to silence into
   the waveform, 8 or so per second through a loud track. Measured against the source track: the
