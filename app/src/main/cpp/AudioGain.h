@@ -7,10 +7,6 @@
 
 namespace djmrec {
 
-// Unity by default: REC OUT from a DJM already sits at line level, and a fixed +12 dB boost
-// hard-clipped hot masters. Users raise gain deliberately in Recording setup.
-constexpr float kRecordingGainLinear = 1.0f;
-
 inline void applyRecordingGain(int32_t* samples, size_t sampleCount, float linearGain) {
     if (linearGain == 1.0f) return;
     constexpr double minSample = static_cast<double>(std::numeric_limits<int32_t>::min());

@@ -12,9 +12,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.audiopro.djmrec.BuildConfig
 import com.audiopro.djmrec.DjmRecApplication
-import com.audiopro.djmrec.audio.AudioEngine
 import com.audiopro.djmrec.audio.ChannelLevel
 import com.audiopro.djmrec.audio.RecordingFormat
 import com.audiopro.djmrec.audio.RecordingHealth
@@ -27,7 +25,6 @@ import com.audiopro.djmrec.usb.CaptureOverrideStore
 import com.audiopro.djmrec.usb.UsbAudioDeviceInfo
 import com.audiopro.djmrec.usb.UsbAudioManager
 import com.audiopro.djmrec.usb.channelPairPrefKey
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,7 +33,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.IOException
 
 /**
  * Wires the USB device stream, the bound [RecordingService], and the Compose UI together.
@@ -278,10 +274,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         val context = getApplication<Application>()
-        // Obsolete experiments (Android-audio-stack capture, top DJM-REC port). The DJM-REC /
-        // MULTI I/O port is a USB *host* port for iPhone/iPad; Android cannot act as a USB audio
-        // device, so only the rear PC/Mac port can ever work.
-        prefs.edit().remove("force_android_capture").remove("djmrec_port_mode").apply()
         isBound = context.bindService(
             Intent(context, RecordingService::class.java), connection, Context.BIND_AUTO_CREATE
         )
@@ -620,14 +612,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Same background-start restriction as [startForegroundServiceSafely], but for plain
-     * `startService()`: observed crashing with `BackgroundServiceStartNotAllowedException` when
-     * a USB detach (`usbDeviceReceiver`, see `UsbAudioManager`) triggers an ACTION_STOP a few
-     * minutes after the user last touched the app -- a background `BroadcastReceiver` doesn't
-     * count as enough "foreground-ness" for Android to allow it. Whatever command this was
-     * carrying (start/pause/resume/stop) is either already moot (service already gone) or not
-     * actionable by the user right now (they're not looking at the app); either way, this only
-     * needs to not crash it.
+     * `startService()` that tolerates Android's background-start restriction. A USB detach
+     * arriving while the app is in the background can be refused; the command is moot by then
+     * (the service is gone or the user isn't looking), so it only needs not to crash.
      */
     private fun startServiceSafely(context: Context, intent: Intent) {
         try {
@@ -638,14 +625,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Android 12+ refuses `startForegroundService()` outright (throwing
-     * `ForegroundServiceStartNotAllowedException`, an `IllegalStateException`) when it decides
-     * the app isn't in a state that justifies it -- observed on-device as an intermittent crash
-     * right when the record button (or an auto-restart after a USB channel-pair change) tried to
-     * start the service. There's no reliable way to predict the OS's call in advance, so this
-     * just makes the failure a visible error instead of a fatal crash. `hadIsoHandle` releases
-     * the just-opened libusb connection on failure -- otherwise it leaks open (never handed to a
-     * service that would close it) and blocks the next attempt from claiming the interface.
+     * `startForegroundService()` that turns Android 12+'s unpredictable refusal
+     * (`ForegroundServiceStartNotAllowedException`) into a visible error instead of a crash.
+     * [hadIsoHandle] releases the just-opened USB connection on failure; nothing else would, and
+     * a leaked connection blocks the next attempt from claiming the interface.
      */
     private fun startForegroundServiceSafely(
         context: Context,

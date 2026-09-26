@@ -77,7 +77,7 @@ UsbAudioEngine (C++)         meter, waveform, ring buffer, encoder thread, WAV/F
 |---|---|---|
 | 0 | Commit in-tree work, repo hygiene, this document, `scripts/host-tests.sh` | done |
 | 1 | Bug fixes found in review (native use-after-free, `closeAfterSave`, rebind collectors, …) | done (2 deferred to phases 3–4) |
-| 2 | Delete dead and deprecated code | |
+| 2 | Delete dead and deprecated code | done |
 | 3 | `CaptureSessionParams`: one description of a session, one JNI call | |
 | 4 | Split `RecordingService` (notifications, wake lock, writer, health supervisor) | |
 | 5 | `RecordingSession` state machine with a real Saving state and typed failures | |

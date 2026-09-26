@@ -71,7 +71,6 @@ class RecordingService : LifecycleService() {
         const val EXTRA_BIT_DEPTH = "extra_bit_depth"
         const val EXTRA_CHANNEL_COUNT = "extra_channel_count"
         const val EXTRA_FORMAT = "extra_format"
-        const val EXTRA_RECORDING_GAIN_DB = "extra_recording_gain_db"
 
         /** [EXTRA_CAPTURE_MODE] value: standard AAudio/AudioRecord path via [EXTRA_DEVICE_ID]. */
         const val CAPTURE_MODE_AAUDIO = 0
@@ -110,8 +109,6 @@ class RecordingService : LifecycleService() {
         private const val METER_UPDATE_INTERVAL_MS = 66L // ~15 fps, plenty for a VU meter
         private const val WAVEFORM_UPDATE_INTERVAL_MS = 33L // ~30 snapshots/s; UI scrolls at up to 60 fps
         private const val NOTIFICATION_UPDATE_INTERVAL_MS = 1_000L
-        private const val USB_SIGNAL_CHECK_INTERVAL_MS = 100L
-        private const val USB_SIGNAL_CHECK_TIMEOUT_MS = 1500L
         private const val HEALTH_UPDATE_INTERVAL_MS = 2_000L
         private const val CHECKPOINT_INTERVAL_MS = 5_000L
         private const val MAX_STALLED_USB_CHECKS = 3
@@ -408,9 +405,6 @@ class RecordingService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        if (intent?.hasExtra(EXTRA_RECORDING_GAIN_DB) == true) {
-            setRecordingGainDb(intent.getIntExtra(EXTRA_RECORDING_GAIN_DB, 0))
-        }
         if (_saving.value && intent?.action != ACTION_STOP_ALL) {
             discardUnusedIsoHandle(intent)
             return START_NOT_STICKY
@@ -1117,16 +1111,10 @@ class RecordingService : LifecycleService() {
     }
 
     /**
-     * Returns false instead of crashing when the OS refuses to promote this service to
-     * foreground -- observed on-device as `SecurityException: Starting FGS with type
-     * microphone ... requires ... and the app must be in the eligible state/exemptions`,
-     * thrown from deep inside `Service.startForeground()` itself (i.e. after
-     * `ContextCompat.startForegroundService()` on the caller side already returned normally --
-     * catching there, as [com.audiopro.djmrec.ui.MainViewModel.startForegroundServiceSafely]
-     * does, is not enough). This can happen even with RECORD_AUDIO granted and
-     * FOREGROUND_SERVICE_MICROPHONE declared: Android 14+ additionally requires the app to be
-     * in a narrow "recently interacted with" eligibility window for a microphone-type FGS
-     * specifically, which a device-attach auto-start can miss by the time onStartCommand runs.
+     * Returns false instead of crashing when the OS refuses foreground promotion. On Android 14+
+     * a microphone-type foreground service also needs the app to have been interacted with
+     * recently, which a device-attach auto-start can miss; the refusal is a SecurityException
+     * from `startForeground()` itself, after the caller's start already succeeded.
      */
     private fun startForegroundNotification(): Boolean {
         val notification = buildNotification()

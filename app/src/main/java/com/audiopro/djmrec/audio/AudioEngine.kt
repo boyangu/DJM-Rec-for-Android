@@ -17,7 +17,7 @@ object AudioEngine {
 
     /**
      * Opens the exclusive, low-latency AAudio input stream bound to [audioManagerDeviceId] and
-     * allocates the ring buffer. Must be called before [startRecording].
+     * allocates the ring buffer. Must be called before [startRecordingFd].
      *
      * @return the sample rate AAudio actually negotiated (may differ from a hint if the
      *   hardware does not support it), or -1 on failure.
@@ -55,15 +55,15 @@ object AudioEngine {
      * @param subframeSize bytes per sample container on the wire (1/2/3/4).
      * @param bitResolution significant bits per sample within that container (e.g. 24).
      * @param extractChannelOffset 0-indexed first channel of the stereo pair to pull out.
-     * @param sampleRateHint trusted as-is; nothing in this path negotiates a rate back from
-     *   the device the way AAudio does.
+     * @param sampleRateHint the rate Kotlin chose; the source then measures the endpoint's real
+     *   packet cadence and that measurement wins.
      * @param includeMicInMix route REC OUT *with* the mic bus (vendor source 0x0a) instead of
      *   "REC OUT without mic" (0x0e) on Pioneer models that offer both.
      * @param playbackOverride -1 follow the profile, 0 force the silent OUT keepalive off, 1 on.
      * @param endpointRateOverride -1 follow the profile, 0/1 force the UAC1 SET_CUR rate command.
      * @param allowFormatMismatch true when the wire format was entered manually (profile table
      *   mismatches are logged, not fatal).
-     * @return `sampleRateHint` on success, or -1 on failure.
+     * @return the measured sample rate on success, or -1 on failure.
      */
     external fun openUsbIso(
         fd: Int,
@@ -90,12 +90,7 @@ object AudioEngine {
         allowFormatMismatch: Boolean
     ): Int
 
-    /**
-     * Begins pulling from the ring buffer into the selected encoder and writing to [outputPath].
-     * [format] is [RecordingFormat.nativeValue].
-     */
-    external fun startRecording(outputPath: String, format: Int): Boolean
-
+    /** Starts encoding into the open [fd] ([format] is [RecordingFormat.nativeValue]). */
     external fun startRecordingFd(fd: Int, format: Int): Boolean
 
     external fun rollRecordingFd(fd: Int, format: Int): Boolean
@@ -124,14 +119,12 @@ object AudioEngine {
     /** Stops the encoder, flushes/patches file headers, and returns the final duration in ms. */
     external fun stopRecording(): Long
 
-    /** Tears down the AAudio stream and ring buffer. Safe to call even if never opened. */
+    /** Stops whichever source is open and frees the ring buffer. Safe to call even if never opened. */
     external fun close()
 
     /**
-     * Instantaneous stereo meter reading, in the layout
-     * `[leftPeakDb, leftRmsDb, rightPeakDb, rightRmsDb]`, already scaled to dBFS in
-     * Trailing floats: committed cursor modulo 1048576, then bin duration in milliseconds.
-     * Polled by the monitoring thread; UI scrolling uses the display frame clock.
+     * Stereo meter reading `[leftPeakDb, leftRmsDb, rightPeakDb, rightRmsDb]` in dBFS: the maximum
+     * since the previous call (the call resets it).
      */
     external fun getLevels(): FloatArray
 
@@ -157,8 +150,8 @@ object AudioEngine {
      */
     external fun getWaveformBins(): FloatArray
 
-    /** Enables native frequency analysis for the optional live waveform. */
     external fun setRecordingGainDb(gainDb: Int)
 
+    /** Enables native frequency analysis for the optional live waveform. */
     external fun setWaveformEnabled(enabled: Boolean)
 }

@@ -426,36 +426,6 @@ void UsbAudioEngine::pinCaptureChannelPair() {
     }
 }
 
-bool UsbAudioEngine::startRecording(const std::string& path, ContainerFormat format) {
-    std::lock_guard<std::mutex> lock(mControlMutex);
-    if (!mStreamOpen.load() || mRecording.load()) return false;
-
-    switch (format) {
-        case ContainerFormat::Wav: mWriter = std::make_unique<WavWriter>(); break;
-        case ContainerFormat::Flac: mWriter = std::make_unique<FlacWriter>(); break;
-    }
-
-    if (!mWriter->open(path, mFormat)) {
-        LOGE("Writer failed to open output file: %s", path.c_str());
-        mWriter.reset();
-        return false;
-    }
-
-    mXRunCount.store(0, std::memory_order_relaxed);
-    mRecordingErrorCode.store(0, std::memory_order_relaxed);
-    mElapsedMillis.store(0, std::memory_order_relaxed);
-    mStopRequested.store(false, std::memory_order_relaxed);
-    mPaused.store(false, std::memory_order_relaxed);
-    mRingBuffer->reset();
-    resetRecordingInstrumentation();
-    pinCaptureChannelPair();
-    // Keep live history: monitoring is already writing the analyzer on the audio thread.
-    mRecording.store(true, std::memory_order_release);
-
-    mEncoderThread = std::thread(&UsbAudioEngine::encoderThreadLoop, this);
-    return true;
-}
-
 bool UsbAudioEngine::startRecordingFd(int fd, ContainerFormat format) {
     std::lock_guard<std::mutex> lock(mControlMutex);
     if (!mStreamOpen.load() || mRecording.load() || fd < 0) return false;
@@ -527,11 +497,8 @@ int64_t UsbAudioEngine::checkpointRecording() {
         partBytes = static_cast<int64_t>(mWriter->bytesWritten());
     }
 
-    // fsync() on a MediaStore descriptor goes through FUSE and regularly costs 50-300 ms. This
-    // used to run under mWriterMutex, blocking encoderThreadLoop for that whole time while the
-    // capture callback kept filling the ring at the wire rate; every checkpoint interval the
-    // ring overran and the dropped frames were audible as a periodic click. Same shape as
-    // rollRecordingFd(), which already does its slow close() outside the writer lock.
+    // Outside mWriterMutex: fsync() on a MediaStore descriptor goes through FUSE and can take
+    // 50-300 ms, and holding the writer lock that long stalls the encoder until the ring overruns.
     const bool synced = mWriter->syncToDisk();
     // Recorded whether or not the sync succeeded: a checkpoint that takes hundreds of
     // milliseconds is the finding, and it is no longer supposed to block the encoder while it
@@ -655,10 +622,8 @@ void UsbAudioEngine::encoderThreadLoop() {
         const size_t framesRead = bytesRead / bytesPerFrame;
 
         if (framesRead > 0) {
-            // Time spent *waiting* for the writer lock is the number that matters: it is exactly
-            // the window in which nothing drains the ring while capture keeps filling it. This is
-            // what the 5 s checkpoint used to inflate to hundreds of milliseconds by holding the
-            // lock across fsync(), and it is how we confirm that is really fixed on a device.
+            // Time spent waiting for the writer lock is the window in which nothing drains the
+            // ring while capture keeps filling it; reported as encoder lock_wait_max_us.
             const auto waitStart = std::chrono::steady_clock::now();
             std::lock_guard<std::mutex> writerLock(mWriterMutex);
             const auto acquired = std::chrono::steady_clock::now();

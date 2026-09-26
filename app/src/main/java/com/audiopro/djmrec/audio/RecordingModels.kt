@@ -6,13 +6,6 @@ enum class RecordingFormat(val nativeValue: Int, val extension: String) {
     FLAC(1, "flac")
 }
 
-/** Bit depth requested from the hardware. 24-bit is packed into a 32-bit container by AAudio. */
-enum class BitDepth(val bits: Int) {
-    PCM_16(16),
-    PCM_24(24),
-    PCM_32(32)
-}
-
 sealed class RecordingState {
     data object Idle : RecordingState()
     data object Preparing : RecordingState()

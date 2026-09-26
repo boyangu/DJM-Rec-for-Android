@@ -11,7 +11,8 @@
 # One-time setup (all under %LOCALAPPDATA%\Android, no admin rights): JDK 17 in jdk-17, the SDK in
 # Sdk with platform-tools, emulator, platforms/android-35, build-tools/35.0.0,
 # ndk/26.1.10909125, cmake/3.22.1 and system-images/android-35/google_apis/x86_64, and an AVD
-# named SetRecorder. local.properties points Gradle at the SDK.
+# named SetRecorder. This script sets ANDROID_HOME, which is how Gradle finds the SDK; no
+# local.properties is needed (lint rejects its Windows paths anyway).
 param(
     [switch]$NoBuild,
     [switch]$Logs,

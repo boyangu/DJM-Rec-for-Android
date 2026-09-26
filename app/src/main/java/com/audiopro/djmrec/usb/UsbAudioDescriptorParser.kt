@@ -15,7 +15,6 @@ object UsbAudioDescriptorParser {
     private const val DT_INTERFACE = 0x04
     private const val DT_ENDPOINT = 0x05
     private const val DT_CS_INTERFACE = 0x24
-    private const val DT_CS_ENDPOINT = 0x25
 
     private const val USB_CLASS_AUDIO = 0x01
     private const val SUBCLASS_AUDIOCONTROL = 0x01

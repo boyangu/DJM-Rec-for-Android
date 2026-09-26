@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove dead code found in the architecture review: two unused composables
+  (`TransportControls`, `DeviceStatusCard`), the unused path-based native recording entry point,
+  an unused enum and eight unused strings, unused constants, an intent extra nothing sent, and a
+  one-time preferences migration. The manifest's `<queries>` block and the ProGuard keep rule for
+  the `usb` package go too (neither had a reason left). Lint's unused-resource check is back on.
 - Fix bugs found in an architecture review:
   - Native: a new USB session could push audio into the previous session's waveform analyzer
     while it was being freed (the source streams during its rate probe, before the new buffers

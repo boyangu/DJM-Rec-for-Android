@@ -23,14 +23,6 @@
     <!-- Android 13+ runtime notification permission for the persistent recording notification. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Needed for resolveActivity() on Android 11+ (package visibility). -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
-    </queries>
-
     <application
         android:name=".DjmRecApplication"
         android:allowBackup="false"

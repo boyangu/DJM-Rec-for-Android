@@ -3,9 +3,8 @@
     native <methods>;
 }
 
-# Keep our JNI-facing classes and their members (called by name from C++).
+# Keep the JNI-facing class and its members.
 -keep class com.audiopro.djmrec.audio.** { *; }
--keep class com.audiopro.djmrec.usb.** { *; }
 
 # Crashlytics 20.1 uses these API 37 classes only behind a runtime SDK check.
 # Keep R8 builds compatible with our lower compile SDK until API 37 is installed.

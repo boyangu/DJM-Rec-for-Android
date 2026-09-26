@@ -237,8 +237,6 @@ enum class PioneerMixerProfile(
         const val ROUTE_INDEX = 0x8002
         /** Capture level register (kernel SND_DJM_WINDEX_CAPLVL); same request type/number as routes. */
         const val CAPTURE_LEVEL_INDEX = 0x8003
-        const val SOURCE_REC_OUT = 0x0A
-        const val SOURCE_REC_OUT_NO_MIC = 0x0E
 
         /** Capture level steps for [supportsCaptureLevel] models: index -> gain in dB. */
         val CAPTURE_LEVEL_STEPS_DB: List<Int> = listOf(15, 12, 9, 6, 3, 0)

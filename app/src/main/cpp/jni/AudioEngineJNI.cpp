@@ -8,16 +8,6 @@
 using djmrec::ContainerFormat;
 using djmrec::UsbAudioEngine;
 
-namespace {
-std::string jstringToStdString(JNIEnv* env, jstring jStr) {
-    if (!jStr) return {};
-    const char* chars = env->GetStringUTFChars(jStr, nullptr);
-    std::string result(chars);
-    env->ReleaseStringUTFChars(jStr, chars);
-    return result;
-}
-} // namespace
-
 // The writer factories switch on ContainerFormat with no default; an int outside the enum would
 // leave the writer null and crash on the next line. Reject it here instead.
 static bool isValidContainer(jint format) {
@@ -91,16 +81,6 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
         }
     }
     return UsbAudioEngine::instance().openUsbIso(config, sampleRateHint);
-}
-
-JNIEXPORT jboolean JNICALL
-Java_com_audiopro_djmrec_audio_AudioEngine_startRecording(
-    JNIEnv* env, jobject /*thiz*/,
-    jstring outputPath, jint format) {
-    if (!isValidContainer(format)) return JNI_FALSE;
-    const std::string path = jstringToStdString(env, outputPath);
-    const auto container = static_cast<ContainerFormat>(format);
-    return UsbAudioEngine::instance().startRecording(path, container) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL

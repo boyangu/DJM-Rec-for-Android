@@ -64,7 +64,6 @@ public:
      */
     int openDemo(int32_t sampleRate, int32_t bitDepth);
 
-    bool startRecording(const std::string& path, ContainerFormat format);
     bool startRecordingFd(int fd, ContainerFormat format);
     bool rollRecordingFd(int fd, ContainerFormat format);
     int64_t checkpointRecording();

@@ -3,7 +3,6 @@ package com.audiopro.djmrec.storage
 import kotlin.math.max
 
 object RecordingStoragePolicy {
-    const val CRITICAL_FREE_BYTES = 64L * 1024 * 1024
     const val MINIMUM_START_BYTES = 256L * 1024 * 1024
     const val WAV_ROLL_BYTES = 3_750_000_000L
 

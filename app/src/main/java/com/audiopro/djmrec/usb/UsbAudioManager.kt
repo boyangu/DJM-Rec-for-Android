@@ -13,6 +13,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -142,9 +143,8 @@ class UsbAudioManager(private val context: Context) {
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun getIntentDevice(intent: Intent): UsbDevice? =
-        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
 
     /** Call once (e.g. from Application.onCreate) to start listening for attach/detach/permission events. */
     fun start() {
@@ -169,14 +169,6 @@ class UsbAudioManager(private val context: Context) {
 
         // Pick up a mixer that was already plugged in before the app started.
         scanForConnectedMixer("start")
-    }
-
-    fun stop() {
-        if (!registered) return
-        context.unregisterReceiver(permissionReceiver)
-        context.unregisterReceiver(usbDeviceReceiver)
-        registered = false
-        releaseIsoCaptureConnection()
     }
 
     /** Explicit UI-triggered scan. If Android exposes the mixer in UsbManager, this requests permission/opens it. */
@@ -605,40 +597,15 @@ class UsbAudioManager(private val context: Context) {
     }
 
     /**
-     * Opens (and holds open) a fresh [UsbDeviceConnection] to the currently published device
-     * purely for the native libusb capture path, and returns everything
-     * `UsbIsoAudioSource`/`AudioEngine.openUsbIso` needs to claim the interface and start
-     * pulling isochronous transfers.
+     * Sets the mixer's MIX/REC OUT route with `UsbDeviceConnection.controlTransfer`, on the
+     * connection whose fd is about to be handed to libusb.
      *
-     * IMPORTANT: unlike [inspectAndPublish]'s short-lived descriptor-reading connection, the
-     * connection opened here is deliberately kept alive in [activeIsoConnection] -- its fd is
-     * handed to `libusb_wrap_sys_device()`, and closing the connection while libusb still holds
-     * that fd would pull capture out from under it. Call [releaseIsoCaptureConnection] once the
-     * native side has fully torn down (after `AudioEngine.close()` returns).
+     * Done here rather than in native code because on the DJM-900NXS2 the same request fails with
+     * `LIBUSB_ERROR_BUSY` through libusb once isochronous transfers are in flight.
      *
-     * Returns null if there is no published device, permission has not been granted, or the
-     * connection could not be opened -- callers should fall back to the AAudio path in that case.
-     */
-    /**
-     * Sets the mixer's MIX/REC OUT route via Android's own `UsbDeviceConnection.controlTransfer`
-     * API, on the same connection whose fd is about to be handed to libusb.
-     *
-     * Why here and not in native code: on real DJM-900NXS2 hardware, the route GET/SET requests
-     * reliably succeed through this Java API but reliably fail (`LIBUSB_ERROR_BUSY`) through
-     * `libusb_control_transfer()` on a `libusb_wrap_sys_device` handle wrapping the very same fd
-     * once isochronous transfers are in flight -- regardless of claim/alt-setting ordering.
-     *
-     * Why this no longer verifies the SET by reading it back: a real USBPcap capture of Pioneer's
-     * own Windows Setting Utility toggling this exact output between MIX and another source
-     * confirmed two things -- (1) `wValue = ((output+1)<<8)|source` with source `0x0A` for MIX is
-     * the correct encoding (the utility sent literally that, for both output 1 and output 5), and
-     * (2) the GET response at this wIndex is `00 01 01 01 01` for the *entire* capture -- before
-     * the SET, immediately after it, and hundreds of polls later -- never once reflecting the
-     * change the utility had just made and the user could see take effect on screen. So this
-     * register is not a live route readout (or at least not one the utility itself trusts), and
-     * gating success/retry on it -- as this function and its native counterpart used to -- was
-     * chasing a signal that was never going to move. The official driver doesn't verify either;
-     * it just sends the SET and trusts it. This does the same.
+     * The write is not verified by reading it back: the GET at this wIndex is not a live readout
+     * (a USBPcap trace of Pioneer's own utility shows it unchanged across a route change the user
+     * could see take effect), and Pioneer's driver does not verify either.
      */
     private fun establishPioneerRoute(
         connection: UsbDeviceConnection,
@@ -720,6 +687,16 @@ class UsbAudioManager(private val context: Context) {
     }
 
     /**
+     * Opens and holds a [UsbDeviceConnection] for the native libusb capture path and returns
+     * everything `AudioEngine.openUsbIso` needs to claim the interface and stream.
+     *
+     * The connection is kept in [activeIsoConnection] because its fd goes to
+     * `libusb_wrap_sys_device()`; closing it while libusb holds the fd would pull capture out
+     * from under it. Call [releaseIsoCaptureConnection] after `AudioEngine.close()` returns.
+     *
+     * Returns null if there is no published device, no permission, or the open fails; callers
+     * report that as an error.
+     *
      * @param selectedChannelOffset the user's USB pair (0-based first channel) or
      *   [AUTO_CHANNEL_OFFSET]; the matching MIX output is routed up front so a manual pick on a
      *   write-only model (DJM-V10) records MIX, not whatever the pair carried before.

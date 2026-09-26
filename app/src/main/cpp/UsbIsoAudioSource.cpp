@@ -546,17 +546,9 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     }
 
     if (mUseEndpointSampleRate) {
-        // A USBPcap capture of Pioneer's own driver actually recording real audio (2026-07-20,
-        // whit_sound_on.pcapng) showed it never sends a GET_CUR probe here at all: right after
-        // SET_INTERFACE it unconditionally sends SET_CUR sampling frequency (bmRequestType=0x22,
-        // bRequest=0x01, wValue=0x0100, wIndex=0x0082, 3-byte LE rate), OUT traffic starts within
-        // ~150us of that SET completing, and the first real (nonzero) IN packet doesn't appear
-        // until ~13ms after that. This code used to GET first and skip the SET whenever the GET
-        // returned a plausible-looking rate -- but exactly like the MIX-route GET (separately
-        // proven via pcap to return a static, non-informative value regardless of real state),
-        // that GET result may not reflect whether the endpoint is actually armed, so gating the
-        // SET on it could have been silently skipping the one command that arms real streaming.
-        // Always SET now, unconditionally, matching the proven-working driver sequence.
+        // Always SET, never gated on a GET: Pioneer's driver sends SET_CUR sampling frequency
+        // unconditionally right after SET_INTERFACE (USBPcap trace), and this GET, like the route
+        // GET, may not reflect whether the endpoint is actually armed.
         mEndpointRateSetResult = setPioneerCaptureSampleRate(
             mHandle, config.endpointAddress, config.requestedSampleRate, profileName());
         const int endpointRate = readPioneerEndpointSampleRate(
@@ -1335,17 +1327,9 @@ void UsbIsoAudioSource::demuxAndEmit(const uint8_t* data, size_t length) {
                 }
             }
             if (mConfig.extractChannelOffset < 0) {
-                // Auto-pick decisions used to be re-evaluated on every incoming packet against
-                // mPairPeaks *while it was still accumulating* for the current window -- multiple
-                // output pairs carrying genuinely comparable real-audio amplitude (confirmed on
-                // DJM-900NXS2 once real signal started flowing, 2026-07-20: all 5 pairs within
-                // ~20% of each other) meant whichever pair's running max happened to be highest at
-                // that exact instant kept leapfrogging, flipping the selected pair dozens of times
-                // per second. That mid-recording channel-switching is what produced the reported
-                // quiet/distorted output: FLAC frames interleaved from different pairs mid-stream.
-                // Wait for one finished window containing audible signal, then lock that pair for
-                // the lifetime of this capture. Re-selecting later can splice unrelated routed
-                // outputs into one recording even when the comparison itself is race-free.
+                // Decide once, on a finished window with audible signal, then lock the pair for
+                // the whole capture. Several outputs can carry comparable audio (all five pairs
+                // within ~20% on a DJM-900NXS2), so re-deciding flips between pairs mid-recording.
                 uint32_t bestMagnitude = 0;
                 int bestOffset = 0;
                 for (size_t pairIndex = 0; pairIndex < mPairPeaks.size(); ++pairIndex) {
