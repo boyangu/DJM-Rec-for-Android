@@ -8,6 +8,7 @@
 
 #include "MeterCalculator.h"
 #include "AudioGain.h"
+#include "DemoSignalGenerator.h"
 #include "writers/WavWriter.h"
 #include "writers/FlacWriter.h"
 
@@ -51,6 +52,7 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
         mUsbIsoSource->stop();
         mUsbIsoSource.reset();
     }
+    stopDemoLocked();
     mSourceMode = SourceMode::Oboe;
 
     mChannelCount = channelCount;
@@ -168,6 +170,7 @@ int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32
         mUsbIsoSource->stop();
         mUsbIsoSource.reset();
     }
+    stopDemoLocked();
     mSourceMode = SourceMode::UsbIso;
 
     // The extracted output is always exactly one stereo pair, regardless of how many channels
@@ -214,6 +217,58 @@ int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32
             mFormat.sampleRate, isoConfig.totalChannels);
 
         return mFormat.sampleRate;
+}
+
+int UsbAudioEngine::openDemo(int32_t sampleRate, int32_t bitDepth) {
+    std::lock_guard<std::mutex> lock(mControlMutex);
+    mLastUsbSetupFailure.clear();
+    if (mStream) {
+        mStream->requestStop();
+        mStream->close();
+        mStream.reset();
+    }
+    if (mUsbIsoSource) {
+        mUsbIsoSource->stop();
+        mUsbIsoSource.reset();
+    }
+    stopDemoLocked();
+
+    mSourceMode = SourceMode::Demo;
+    mChannelCount = 2;
+    mOboeFormat = oboe::AudioFormat::I32;
+    mFormat.sampleRate = sampleRate > 0 ? sampleRate : 48000;
+    mFormat.channelCount = 2;
+    mFormat.bitsPerSample = bitDepth > 0 ? bitDepth : 24;
+    const size_t ringBufferFrames = static_cast<size_t>(mFormat.sampleRate) * 2;
+    mRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * bytesPerFrameFor(oboe::AudioFormat::I32, 2));
+    mWaveformAnalyzer = std::make_unique<WaveformAnalyzer>(mFormat.sampleRate);
+
+    mDemoRunning.store(true, std::memory_order_release);
+    mDemoThread = std::thread(&UsbAudioEngine::demoThreadLoop, this, mFormat.sampleRate);
+    mStreamOpen.store(true, std::memory_order_release);
+    LOGI("Demo mixer open: %d Hz, %d-bit synthetic signal", mFormat.sampleRate, mFormat.bitsPerSample);
+    return mFormat.sampleRate;
+}
+
+void UsbAudioEngine::demoThreadLoop(int32_t sampleRate) {
+    // 5 ms blocks on an absolute schedule, so the stream runs at exactly the nominal rate no
+    // matter how late any single wake-up is.
+    DemoSignalGenerator generator(sampleRate);
+    constexpr int kBlocksPerSecond = 200;
+    const size_t framesPerBlock = static_cast<size_t>(sampleRate / kBlocksPerSecond);
+    std::vector<int32_t> block(framesPerBlock * 2);
+    auto next = std::chrono::steady_clock::now();
+    while (mDemoRunning.load(std::memory_order_acquire)) {
+        generator.render(block.data(), framesPerBlock);
+        onUsbIsoFrames(block.data(), framesPerBlock);
+        next += std::chrono::microseconds(1000000 / kBlocksPerSecond);
+        std::this_thread::sleep_until(next);
+    }
+}
+
+void UsbAudioEngine::stopDemoLocked() {
+    mDemoRunning.store(false, std::memory_order_release);
+    if (mDemoThread.joinable()) mDemoThread.join();
 }
 
 void UsbAudioEngine::onUsbIsoFrames(const int32_t* interleavedStereo, size_t frameCount) {
@@ -558,6 +613,7 @@ void UsbAudioEngine::closeEngine() {
         mUsbIsoSource->stop();
         mUsbIsoSource.reset();
     }
+    stopDemoLocked();
     mRingBuffer.reset();
     mSourceMode = SourceMode::None;
     mStreamOpen.store(false, std::memory_order_release);
@@ -662,6 +718,7 @@ std::string UsbAudioEngine::getDiagnosticSummary() {
     switch (mSourceMode) {
         case SourceMode::Oboe: sourceMode = "aaudio"; break;
         case SourceMode::UsbIso: sourceMode = "usb_iso"; break;
+        case SourceMode::Demo: sourceMode = "demo"; break;
         case SourceMode::None: break;
     }
 

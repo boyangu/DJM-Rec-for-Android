@@ -31,6 +31,7 @@ djmrec_add_test(WaveformSnapshotTest)
 djmrec_add_test(MeterCalculatorTest)
 djmrec_add_test(ZeroPacketFilterTest)
 djmrec_add_test(ImplicitFeedbackPacerTest)
+djmrec_add_test(DemoSignalGeneratorTest)
 # MeterCalculator.h takes an oboe::AudioFormat to select its decode loop. host_stubs supplies
 # just that enum so the metering maths is testable off-device without the NDK.
 target_include_directories(MeterCalculatorTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs")

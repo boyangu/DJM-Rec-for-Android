@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Debug builds run in the Android emulator on a PC. On an emulator with no USB device, a demo
+  mixer stands in for the hardware and plays a synthetic 124 BPM loop through the real native
+  audio path, so meters, waveform, recording and the battery saver screen all work without a
+  mixer. Release builds and real phones never see it. `scripts/run-dev.ps1` builds, starts the
+  emulator, installs and launches in one command.
 - Add a battery saver screen for long sets. While recording with Set Recorder in front, the
   screen no longer sleeps, and after 30 seconds without a touch it drops to a black screen showing
   a red recording dot with the elapsed time (`mm:ss`, `h:mm:ss` past an hour), the time of day in

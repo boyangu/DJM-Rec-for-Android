@@ -87,6 +87,8 @@ android {
             // So debug and release can be installed side-by-side
             applicationIdSuffix = ".debug"
             buildConfigField("boolean", "FIREBASE_CONFIGURED", "false")
+            // x86_64 so debug builds run in the Android emulator on a PC (with the demo mixer).
+            ndk { abiFilters += "x86_64" }
         }
         create("local") {
             initWith(getByName("release"))

@@ -27,7 +27,7 @@ enum class ContainerFormat : int {
  * to reach into a multichannel interface for a specific channel pair that AAudio itself has
  * no way to select.
  */
-enum class SourceMode { None, Oboe, UsbIso };
+enum class SourceMode { None, Oboe, UsbIso, Demo };
 
 /**
  * The whole native audio pipeline in one place:
@@ -56,6 +56,13 @@ public:
      * Returns the measured sample rate on success, or -1 on failure.
      */
     int openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32_t sampleRateHint);
+
+    /**
+     * Debug-only demo mixer: feeds a synthetic music-like signal (DemoSignalGenerator) through
+     * the same path as USB audio, in real time, so the app can run in an emulator. Only reachable
+     * from debug builds (the Kotlin side gates it). Returns the sample rate, or -1.
+     */
+    int openDemo(int32_t sampleRate, int32_t bitDepth);
 
     bool startRecording(const std::string& path, ContainerFormat format);
     bool startRecordingFd(int fd, ContainerFormat format);
@@ -114,6 +121,9 @@ private:
      *  updates the VU meter atomics and (if recording) writes into mRingBuffer. Called from
      *  the libusb event thread by UsbIsoAudioSource's callback. */
     void onUsbIsoFrames(const int32_t* interleavedStereo, size_t frameCount);
+    /** Stops and joins the demo generator thread, if running. Call with mControlMutex held. */
+    void stopDemoLocked();
+    void demoThreadLoop(int32_t sampleRate);
 
     std::shared_ptr<oboe::AudioStream> mStream;
     std::unique_ptr<UsbIsoAudioSource> mUsbIsoSource;
@@ -123,6 +133,8 @@ private:
     std::unique_ptr<AudioWriter> mWriter;
     std::unique_ptr<WaveformAnalyzer> mWaveformAnalyzer;
     std::thread mEncoderThread;
+    std::thread mDemoThread;
+    std::atomic<bool> mDemoRunning{false};
 
     mutable std::mutex mControlMutex; // guards start/stop/pause transitions (not the realtime path)
     mutable std::mutex mWriterMutex;

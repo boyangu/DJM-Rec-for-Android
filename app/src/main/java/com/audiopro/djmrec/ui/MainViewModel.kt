@@ -540,6 +540,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             putExtra(RecordingService.EXTRA_SAMPLE_RATE, sampleRate)
             putExtra(RecordingService.EXTRA_BIT_DEPTH, device.bitResolution)
         }
+        if (com.audiopro.djmrec.usb.DemoMixer.isDemo(device)) {
+            intent.putExtra(RecordingService.EXTRA_CAPTURE_MODE, RecordingService.CAPTURE_MODE_AAUDIO)
+            intent.putExtra(RecordingService.EXTRA_DEVICE_ID, com.audiopro.djmrec.usb.DemoMixer.AUDIO_DEVICE_ID)
+            return intent
+        }
         val handle = if (device.requiresIsoCapture) {
             usbAudioManager.openIsoCaptureHandle(channelOffset, includeMic, _captureLevelStep.value)
         } else {

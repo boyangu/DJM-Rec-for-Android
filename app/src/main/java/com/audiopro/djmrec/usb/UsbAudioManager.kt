@@ -185,6 +185,12 @@ class UsbAudioManager(private val context: Context) {
         logEnumeratedDevices(reason)
         val device = findConnectedAudioClassDevice()
         if (device == null) {
+            if (DemoMixer.enabled) {
+                // Debug emulator build: stand in for the missing mixer (see DemoMixer).
+                _deviceState.value = DemoMixer.device
+                _connectionNotice.value = null
+                return true
+            }
             Log.w(TAG, "$reason: no connected device exposes a supported audio capture interface")
             _deviceState.value = null
             _connectionNotice.value = if (_inputs.value.isEmpty()) "Connect a mixer or USB audio interface using a data cable."

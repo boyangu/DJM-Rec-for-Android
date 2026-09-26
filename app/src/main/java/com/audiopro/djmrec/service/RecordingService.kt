@@ -584,7 +584,13 @@ class RecordingService : LifecycleService() {
         currentBitDepth = bitDepth
         currentOutputChannels = 2
 
-        val negotiatedRate = AudioEngine.open(audioManagerDeviceId, sampleRateHint, channelCount, bitDepth)
+        val negotiatedRate =
+            if (com.audiopro.djmrec.usb.DemoMixer.enabled &&
+                audioManagerDeviceId == com.audiopro.djmrec.usb.DemoMixer.AUDIO_DEVICE_ID) {
+                AudioEngine.openDemo(sampleRateHint, bitDepth)
+            } else {
+                AudioEngine.open(audioManagerDeviceId, sampleRateHint, channelCount, bitDepth)
+            }
         if (negotiatedRate <= 0) {
             failPreparation("Failed to open exclusive audio stream")
             return

@@ -35,6 +35,12 @@ Java_com_audiopro_djmrec_audio_AudioEngine_open(
 }
 
 JNIEXPORT jint JNICALL
+Java_com_audiopro_djmrec_audio_AudioEngine_openDemo(
+    JNIEnv* /*env*/, jobject /*thiz*/, jint sampleRate, jint bitDepth) {
+    return UsbAudioEngine::instance().openDemo(sampleRate, bitDepth);
+}
+
+JNIEXPORT jint JNICALL
 Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
     JNIEnv* env, jobject /*thiz*/,
     jint fd, jint interfaceNumber, jint alternateSetting, jint endpointAddress, jint maxPacketSize,

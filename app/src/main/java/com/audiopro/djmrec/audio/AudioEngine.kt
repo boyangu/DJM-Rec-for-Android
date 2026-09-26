@@ -30,6 +30,12 @@ object AudioEngine {
     ): Int
 
     /**
+     * Debug builds only: opens the demo mixer, a synthetic music-like signal fed through the same
+     * path as USB audio, so the app runs in an emulator. @return the sample rate, or -1.
+     */
+    external fun openDemo(sampleRate: Int, bitDepth: Int): Int
+
+    /**
      * Opens the raw libusb isochronous capture path instead of AAudio/AudioRecord, extracting
      * a stereo pair out of a wider multichannel USB Audio interface. This exists because
      * AAudio has no API to select an arbitrary channel *offset* out of a multichannel UAC2
