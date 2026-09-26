@@ -836,12 +836,14 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
     // stall longer than that means the controller ran out of queued buffers and stopped
     // collecting audio entirely -- a loss no counter here can see, because those packets never
     // reached the host.
+    const int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    uint64_t reapGapMicros = 0;
     {
-        const int64_t nowNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
         const int64_t previous = mLastReapNanos.exchange(nowNanos, std::memory_order_relaxed);
         if (previous != 0 && nowNanos > previous) {
             const auto gapMicros = static_cast<uint64_t>((nowNanos - previous) / 1000);
+            reapGapMicros = gapMicros;
             uint64_t previousMax = mMaxReapGapMicros.load(std::memory_order_relaxed);
             while (gapMicros > previousMax &&
                    !mMaxReapGapMicros.compare_exchange_weak(previousMax, gapMicros,
@@ -869,6 +871,9 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
             // is a synchronous control transfer -- so give up and let the Kotlin side reopen).
             mPacketsMissed.fetch_add(static_cast<uint64_t>(transfer->num_iso_packets),
                                      std::memory_order_relaxed);
+            logMiss("whole URB", transfer->num_iso_packets, transfer->num_iso_packets, 0,
+                    transfer->status, mFramesEmitted.load(std::memory_order_relaxed), nowNanos,
+                    reapGapMicros);
             {
                 // Keep the OUT side moving at the nominal rate across the hole.
                 std::lock_guard<std::mutex> lock(mPlaybackMutex);
@@ -904,10 +909,18 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
             }
         }
     }
+    int missedHere = 0, firstMissIndex = -1, firstMissStatus = 0;
+    uint64_t missFrame = 0;
     for (int i = 0; i < transfer->num_iso_packets; ++i) {
         const libusb_iso_packet_descriptor& packet = transfer->iso_packet_desc[i];
         if (packet.status != LIBUSB_TRANSFER_COMPLETED) {
             mPacketsMissed.fetch_add(1, std::memory_order_relaxed);
+            if (missedHere++ == 0) {
+                firstMissIndex = i; firstMissStatus = packet.status;
+                // Taken here, before the rest of the URB is emitted, so it is the file position
+                // of the gap itself.
+                missFrame = mFramesEmitted.load(std::memory_order_relaxed);
+            }
             if (const size_t held = mZeroPacketFilter.interrupt()) demuxAndEmit(mZeroPacket.data(), held);
             // Bytes held back from before the gap can no longer be completed by the bytes that
             // follow it: splicing the two halves together fabricates one frame of half-old,
@@ -939,10 +952,40 @@ void UsbIsoAudioSource::handleCompletedTransfer(libusb_transfer* transfer) {
         }
     }
 
+    if (missedHere > 0) {
+        logMiss("packets", missedHere, transfer->num_iso_packets, firstMissIndex, firstMissStatus,
+                missFrame, nowNanos, reapGapMicros);
+    }
+
     if (!submitTransfer(transfer)) {
         mResubmitFailures.fetch_add(1, std::memory_order_relaxed);
         failTransport("re-submit failed after completed transfer");
     }
+}
+
+// One line per URB that lost audio, so a click heard in a recording can be matched to a USB
+// event: the source frame maps to a file position via the "Recording starts at source frame"
+// line. The status is libusb's, which folds the kernel's -EXDEV (the controller missed the
+// microframe), -EPROTO and -EILSEQ (bus errors) into LIBUSB_TRANSFER_ERROR = 1; OVERFLOW = 6 means
+// the device sent more than maxPacketSize. The time since the previous miss shows whether they
+// come on a schedule (power management) or at random (signal integrity).
+void UsbIsoAudioSource::logMiss(const char* kind, int missed, int total, int firstIndex, int status,
+                                uint64_t missFrame, int64_t nowNanos, uint64_t reapGapMicros) {
+    const double sincePrevious = mLastMissNanos == 0 ? -1.0 : (nowNanos - mLastMissNanos) / 1e9;
+    mLastMissNanos = nowNanos;
+    {
+        const int64_t startNanos = mCaptureStartNanos.load(std::memory_order_relaxed);
+        const uint64_t n = mMissRecords.load(std::memory_order_relaxed);
+        mMissRing[n % kMissRingSize] = MissRecord{
+            missFrame,
+            static_cast<uint32_t>(startNanos > 0 && nowNanos > startNanos ? (nowNanos - startNanos) / 1000000 : 0),
+            static_cast<uint16_t>(missed), static_cast<int16_t>(status)};
+        mMissRecords.store(n + 1, std::memory_order_release);
+    }
+    LOGW("USB miss: %s %d/%d (first #%d status %d) at source frame %llu; %.3f s since previous "
+         "miss; reap gap %llu us",
+         kind, missed, total, firstIndex, status, static_cast<unsigned long long>(missFrame),
+         sincePrevious, static_cast<unsigned long long>(reapGapMicros));
 }
 
 UsbIsoAudioSource::TransferStatsSnapshot UsbIsoAudioSource::getTransferStats() const {
@@ -1042,6 +1085,20 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
             << " max_reap_gap_us:" << mMaxReapGapMicros.load(std::memory_order_relaxed)
             << " unaligned_packets:" << mUnalignedPackets.load(std::memory_order_relaxed)
             << " zero_packets_dropped:" << mZeroPacketFilter.droppedPackets() << '\n';
+    }
+    {
+        // Newest last. Each entry is wall_ms:frame:packets:status; wall_ms counts from capture
+        // start, frame is the source frame of the gap (see recording_start_frame in the engine
+        // snapshot for the file position).
+        const uint64_t total = mMissRecords.load(std::memory_order_acquire);
+        const uint64_t shown = std::min<uint64_t>(total, kMissRingSize);
+        out << "recent_misses=total:" << total << " shown:" << shown;
+        for (uint64_t i = total - shown; i < total; ++i) {
+            const MissRecord& r = mMissRing[i % kMissRingSize];
+            out << ((i - (total - shown)) % 8 == 0 ? "\n  " : " ")
+                << r.wallMs << ':' << r.frame << ':' << r.packets << ':' << r.status;
+        }
+        out << '\n';
     }
     out << "transfers=completed:" << stats.packetsCompleted
         << " missed:" << stats.packetsMissed

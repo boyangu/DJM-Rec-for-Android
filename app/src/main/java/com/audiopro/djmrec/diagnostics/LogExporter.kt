@@ -177,6 +177,7 @@ object LogExporter {
         )
         sb.appendLine("MIX route includes mic: ${prefs.getBoolean(KEY_INCLUDE_MIC, true)}")
         sb.appendLine("software gain dB: ${prefs.getInt("recording_gain_db", 0)}")
+        sb.appendLine("USB idle guard: ${com.audiopro.djmrec.service.UsbIdleGuard.lastStatus}")
         sb.appendLine()
     }
 

@@ -113,6 +113,9 @@ class RecordingService : LifecycleService() {
     /** Silences calls and notifications for the length of a set; see DoNotDisturbController. */
     private val doNotDisturb by lazy { DoNotDisturbController(this) }
 
+    /** Keeps the phone out of deep sleep while raw USB capture runs; see UsbIdleGuard. */
+    private val idleGuard by lazy { UsbIdleGuard(this) }
+
     private val events get() = (application as DjmRecApplication).sessionEvents
 
     /**
@@ -471,6 +474,7 @@ class RecordingService : LifecycleService() {
             return
         }
         updateRecordingFormat(negotiatedRate, params.bitDepth)
+        if (params.isUsbIso) idleGuard.start()
 
         if (monitorOnly) {
             beginMonitoring()
@@ -611,6 +615,7 @@ class RecordingService : LifecycleService() {
 
     /** Closes the [UsbAudioManager] connection backing native libusb capture, if this session used it. */
     private fun releaseIsoConnectionIfNeeded() {
+        idleGuard.stop()
         if (isUsbIsoSession) {
             (application as DjmRecApplication).usbAudioManager.releaseIsoCaptureConnection()
         }
@@ -764,6 +769,7 @@ class RecordingService : LifecycleService() {
             releaseIsoConnectionIfNeeded()
         }
         wakeLock.release()
+        idleGuard.stop()
         // The state collector is already cancelled by the time we get here, so the phone would
         // otherwise stay silenced after the service goes away.
         doNotDisturb.release()

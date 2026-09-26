@@ -163,6 +163,8 @@ private:
 
     std::atomic<int32_t> mXRunCount{0};
     std::atomic<int64_t> mElapsedMillis{0};
+    // Source frame at which the current recording began; recording frame 0 in the file.
+    std::atomic<uint64_t> mRecordingStartFrame{0};
 
     // --- Recording-path instrumentation, reported by getDiagnosticSummary() ---------------
     // These exist to tell three failure modes apart from a support report alone, without

@@ -8,6 +8,7 @@ modifies its input.
 |---|---|
 | `find_clicks.py rec.wav` | Are there clicks, and what spaces them? Checks first for short runs of exact digital zero (a padded USB packet), then for breaks in waveform continuity, and says whether the spacing points at the app, lost USB packets, or the music itself. |
 | `find_echo.py rec.wav` | Is any audio repeated or echoed? Reports the delay in USB packets, URBs and encoder chunks so a hit names the buffer responsible. |
+| `match_misses.py report rec.wav` | Where in the recording did each lost USB packet land, and does the audio step there? Reads the capture's own record of the last 512 losses from the exported diagnostic report, so it works for a whole set even though logcat forgets within a minute. |
 | `repair_zero_holes.py in.wav out.wav` | Removes padded-packet holes from a recording made before the capture fix. Lossless: the holes were inserted, not cut in. |
 
 When the source track is available, the strongest test is to align the recording against it and

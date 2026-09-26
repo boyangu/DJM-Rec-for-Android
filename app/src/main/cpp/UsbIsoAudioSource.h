@@ -118,6 +118,8 @@ public:
     int waitForMeasuredSampleRate(int timeoutMs);
 
     TransferStatsSnapshot getTransferStats() const;
+    /** Frames handed downstream since start(); a recording's frame 0 is this value at record start. */
+    uint64_t framesEmitted() const { return mFramesEmitted.load(std::memory_order_relaxed); }
 
     /** Release-safe, read-only snapshot used by exported support reports. */
     std::string diagnosticSummary() const;
@@ -222,6 +224,18 @@ private:
     std::atomic<bool> mRunning{false};
     std::atomic<bool> mTransportFault{false};
     int mConsecutiveTransferErrors = 0;
+    // Event thread only: when the previous missed packet was seen, for the per-miss log line.
+    int64_t mLastMissNanos = 0;
+    // The last kMissRingSize losses, for the diagnostic report. logcat is a buffer shared with
+    // every app on the phone and held under a minute of this app's lines on a busy system, so
+    // per-loss log lines alone do not survive a long set. Written by the event thread, read racily
+    // by diagnosticSummary(); a torn record is acceptable in a report.
+    struct MissRecord { uint64_t frame; uint32_t wallMs; uint16_t packets; int16_t status; };
+    static constexpr size_t kMissRingSize = 512;
+    std::array<MissRecord, kMissRingSize> mMissRing{};
+    std::atomic<uint64_t> mMissRecords{0};
+    void logMiss(const char* kind, int missed, int total, int firstIndex, int status,
+                 uint64_t missFrame, int64_t nowNanos, uint64_t reapGapMicros);
     std::atomic<int> mOutstandingTransfers{0};
     std::atomic<uint64_t> mPacketsCompleted{0};
     std::atomic<uint64_t> mPacketsMissed{0};

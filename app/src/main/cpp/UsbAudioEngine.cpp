@@ -448,6 +448,12 @@ bool UsbAudioEngine::startRecordingFd(int fd, ContainerFormat format) {
     mRingBuffer->reset();
     resetRecordingInstrumentation();
     pinCaptureChannelPair();
+    mRecordingStartFrame.store(mSourceMode == SourceMode::UsbIso && mUsbIsoSource ? mUsbIsoSource->framesEmitted() : 0,
+                               std::memory_order_relaxed);
+    if (mSourceMode == SourceMode::UsbIso && mUsbIsoSource) {
+        LOGI("Recording starts at source frame %llu",
+             static_cast<unsigned long long>(mRecordingStartFrame.load(std::memory_order_relaxed)));
+    }
     // Keep live history: monitoring is already writing the analyzer on the audio thread.
     mRecording.store(true, std::memory_order_release);
     mEncoderThread = std::thread(&UsbAudioEngine::encoderThreadLoop, this);
@@ -705,6 +711,7 @@ std::string UsbAudioEngine::getDiagnosticSummary() {
         << "xrun_count=" << mXRunCount.load(std::memory_order_relaxed) << '\n'
         << "recording_error_code=" << mRecordingErrorCode.load(std::memory_order_relaxed) << '\n'
         << "elapsed_ms=" << mElapsedMillis.load(std::memory_order_relaxed) << '\n'
+        << "recording_start_frame=" << mRecordingStartFrame.load(std::memory_order_relaxed) << '\n'
         // Non-destructive on purpose: a support report must never swallow a peak that the
         // VU meter is about to display. Reports the in-flight accumulator since the last poll.
         << "levels_db=peak_l:" << mLeftPeakDb.load(std::memory_order_relaxed)
