@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
 
     /**
      * The display's slowest mode at the current resolution, or 0 (no preference). The saver screen
-     * changes once a second, so a variable-refresh panel can idle far below its usual 60-120 Hz.
+     * changes twice a second, so a variable-refresh panel can idle far below its usual 60-120 Hz.
      */
     private fun lowestRefreshModeId(): Int {
         val display = window.decorView.display ?: return 0

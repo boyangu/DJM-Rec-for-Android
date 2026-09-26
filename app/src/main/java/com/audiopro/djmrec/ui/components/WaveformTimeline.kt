@@ -1,7 +1,7 @@
 package com.audiopro.djmrec.ui.components
 
 import kotlin.math.pow
-import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** Audio cursor drives translation; historical peaks never morph between snapshots. */
 internal class WaveformTimeline {
@@ -49,12 +49,20 @@ internal class WaveformTimeline {
     }
 }
 
-/** Relative band magnitude maps directly to additive RGB; equal bands produce white. */
-internal fun waveformRgb(low: Float, mid: Float, high: Float): Int {
+/**
+ * Heights (0..1 of the half-height) of the low, mid and high layers for one bin.
+ *
+ * The outer shape is the peak envelope, square-root compressed so quiet passages stay visible.
+ * The loudest band fills it; the others are drawn in proportion, softened by a 0.65 power so a
+ * band a quarter as strong is still clearly there. Drawn low at the back, high in front.
+ */
+internal fun bandHeights(peak: Float, low: Float, mid: Float, high: Float, out: FloatArray) {
     fun clean(value: Float) = if (value.isFinite()) value.coerceAtLeast(0f) else 0f
-    val r = clean(low); val g = clean(mid); val b = clean(high)
-    val max = maxOf(r, g, b)
-    if (max < 0.000001f) return 0xff000000.toInt()
-    fun channel(value: Float) = ((value / max).pow(0.65f) * 255).roundToInt().coerceIn(0, 255)
-    return (0xff shl 24) or (channel(r) shl 16) or (channel(g) shl 8) or channel(b)
+    val envelope = sqrt(clean(peak).coerceAtMost(1f))
+    val l = clean(low); val m = clean(mid); val h = clean(high)
+    val max = maxOf(l, m, h)
+    if (max < 0.000001f || envelope == 0f) { out.fill(0f); return }
+    out[0] = envelope * (l / max).pow(0.65f)
+    out[1] = envelope * (m / max).pow(0.65f)
+    out[2] = envelope * (h / max).pow(0.65f)
 }

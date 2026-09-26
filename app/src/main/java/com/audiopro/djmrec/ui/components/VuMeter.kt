@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,7 +27,6 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -42,11 +40,19 @@ import com.audiopro.djmrec.audio.StereoLevels
 import com.audiopro.djmrec.ui.theme.MeterAmber
 import com.audiopro.djmrec.ui.theme.MeterGreen
 import com.audiopro.djmrec.ui.theme.MeterRed
+import com.audiopro.djmrec.ui.theme.SrColor
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 /** Number of lit blocks across the bar; also the granularity of the colour zones. */
-internal const val METER_SEGMENT_COUNT = 60
+internal const val METER_SEGMENT_COUNT = 48
 
 internal const val METER_FLOOR_DB = -60f
 // 0 dBFS, not +3: the native meter clamps to 0 (MeterCalculator.h amplitudeToDb), so a
@@ -86,7 +92,7 @@ internal fun colorForFraction(fraction: Float): Color = when {
 fun StereoVuMeter(levels: StereoLevels, modifier: Modifier = Modifier, active: Boolean = true) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         HorizontalChannelMeter(label = "L", level = levels.left, active = active)
         HorizontalChannelMeter(label = "R", level = levels.right, active = active)
@@ -151,70 +157,58 @@ private fun HorizontalChannelMeter(label: String, level: ChannelLevel, active: B
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
             contentDescription = "$label input, peak $readoutDb dBFS" +
                 if (clipLatched) ", clipping" else ""
         }
     ) {
-        // Channel label
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(16.dp)
-        )
+        Text(text = label, style = MeterLabelStyle, color = SrColor.TextSecondary, modifier = Modifier.width(10.dp))
 
-        // Clip indicator dot
-        Box(
-            modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .width(6.dp)
-                .height(18.dp)
-        ) {
+        Box(modifier = Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(3.dp)).background(SrColor.SurfaceRaised)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRoundRect(
-                    color = if (clipLatched) MeterRed else Color(0xFF222433),
-                    cornerRadius = CornerRadius(3f, 3f)
-                )
-            }
-        }
-
-        // Horizontal meter bar
-        Box(modifier = Modifier.weight(1f).height(18.dp)) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawHorizontalMeterTrack()
                 drawHorizontalMeterFill(dbToFraction(rmsDb.floatValue))
                 drawHorizontalPeakLine(dbToFraction(peakHoldDb.floatValue))
             }
         }
 
-        // Peak dB readout. Everything here exists to stop the row re-measuring as the number
-        // changes: the old box left only 22dp of content width, so "-60" wrapped onto a second
-        // line and the whole meter jumped. Fixed width outside the padding, one line, no wrap,
-        // and tabular figures so "-11" and "-60" are exactly the same width.
+        // Clip light, latched for CLIP_LATCH_MS.
+        Box(
+            Modifier.width(6.dp).height(10.dp)
+                .background(if (clipLatched) MeterRed else SrColor.SurfaceRaised, RoundedCornerShape(2.dp))
+        )
+
+        // Peak dB readout. Fixed width, one line, no wrap and tabular figures, so "-11" and
+        // "-60" are the same width and the row never re-measures as the number changes.
         Text(
             text = "$readoutDb",
-            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MeterLabelStyle,
+            color = SrColor.TextSecondary,
             maxLines = 1,
             softWrap = false,
             textAlign = TextAlign.End,
-            modifier = Modifier.padding(start = 6.dp).width(30.dp)
+            modifier = Modifier.width(28.dp)
         )
     }
 }
 
+private val MeterLabelStyle = TextStyle(
+    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp,
+    fontFeatureSettings = "tnum"
+)
+
 @Composable
 private fun HorizontalDbScale() {
-    val marks = listOf(-60, -48, -36, -24, -12, -6, -3, 0)
+    val marks = listOf(-60, -40, -20, -9, 0)
+    // Insets line the scale up with the bar: label + gap before it, gap + clip + gap + readout after.
     Layout(
-        modifier = Modifier.fillMaxWidth().padding(start = 30.dp, end = 34.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 50.dp),
         content = {
             marks.forEach { db ->
                 Text(
                     text = if (db > 0) "+$db" else "$db",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    style = MeterLabelStyle.copy(fontSize = 10.sp),
+                    color = SrColor.TextSecondary
                 )
             }
         }
@@ -235,13 +229,6 @@ private fun HorizontalDbScale() {
 
 // --- Horizontal meter drawing helpers ---
 
-private fun DrawScope.drawHorizontalMeterTrack() {
-    drawRoundRect(
-        color = Color(0xFF11141D),
-        cornerRadius = CornerRadius(6f, 6f)
-    )
-}
-
 /**
  * Position used to colour segment [index]: its right edge, not its left.
  *
@@ -254,7 +241,7 @@ private fun DrawScope.drawHorizontalMeterFill(fraction: Float) {
     val fillWidth = size.width * fraction
     val segmentCount = METER_SEGMENT_COUNT
     val segmentWidth = size.width / segmentCount
-    val gapRatio = 0.15f
+    val gapRatio = 0.22f
 
     for (i in 0 until segmentCount) {
         val segLeft = i * segmentWidth
@@ -263,17 +250,14 @@ private fun DrawScope.drawHorizontalMeterFill(fraction: Float) {
         val color = colorForFraction(segFraction)
         drawRect(
             color = color,
-            topLeft = Offset(segLeft + segmentWidth * gapRatio / 2f, 0f),
+            topLeft = Offset(segLeft, 0f),
             size = Size(segmentWidth * (1f - gapRatio), size.height)
         )
     }
 }
 
 private fun DrawScope.drawHorizontalPeakLine(fraction: Float) {
-    val x = (size.width * fraction).coerceIn(0f, size.width - 2f)
-    drawRect(
-        color = Color.White,
-        topLeft = Offset(x, 0f),
-        size = Size(3f, size.height)
-    )
+    val width = 2.dp.toPx()
+    val x = (size.width * fraction - width * fraction).coerceIn(0f, size.width - width)
+    drawRect(color = SrColor.MeterPeak, topLeft = Offset(x, 0f), size = Size(width, size.height))
 }

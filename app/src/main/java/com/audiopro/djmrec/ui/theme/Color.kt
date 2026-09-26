@@ -12,6 +12,6 @@ val TextPrimary = Color(0xFFF5F6FA)
 val TextSecondary = Color(0xFF9AA1B2)
 
 // Meter gradient stops (green -> amber -> red as level approaches 0 dBFS).
-val MeterGreen = Color(0xFF00E5A0)
-val MeterAmber = Color(0xFFFFC93C)
-val MeterRed = Color(0xFFFF4D4D)
+val MeterGreen = Color(0xFF32D74B)
+val MeterAmber = Color(0xFFFF9F0A)
+val MeterRed = Color(0xFFFF453A)

@@ -18,7 +18,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,10 +45,24 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.audiopro.djmrec.DjmRecApplication
-import com.audiopro.djmrec.ui.theme.BackgroundDark
-import com.audiopro.djmrec.ui.theme.SurfaceDark
-import com.audiopro.djmrec.ui.theme.TextPrimary
-import com.audiopro.djmrec.ui.theme.TextSecondary
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.audiopro.djmrec.BuildConfig
+import com.audiopro.djmrec.ui.theme.SrColor
 import com.audiopro.djmrec.audio.RecordingState
 import com.audiopro.djmrec.update.AppUpdate
 import com.audiopro.djmrec.update.UpdateChecker
@@ -58,7 +71,7 @@ import kotlinx.coroutines.launch
 /** Every screen in the app. The navigation drawer is the only way to move between them. */
 private enum class Destination(val label: String, val icon: ImageVector) {
     RECORDING("Recording", Icons.Filled.FiberManualRecord),
-    RECORDINGS("My Recordings", Icons.Filled.LibraryMusic),
+    RECORDINGS("Library", Icons.Filled.LibraryMusic),
     SETTINGS("Settings", Icons.Filled.Settings),
     DIAGNOSTICS("Diagnostics", Icons.Filled.BugReport)
 }
@@ -125,86 +138,87 @@ fun MainScreen(viewModel: MainViewModel) {
         )
     }
 
+    val recording = recordingState is RecordingState.Recording || recordingState is RecordingState.Paused
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                drawerContainerColor = SurfaceDark
+                modifier = Modifier.width(300.dp),
+                drawerContainerColor = SrColor.Surface,
+                drawerShape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
             ) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Set Recorder",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary,
-                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 12.dp)
-                )
-                Text(
-                    text = "USB recording studio",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(horizontal = 28.dp)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f))
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Destination.entries.forEach { dest ->
-                    NavigationDrawerItem(
-                        icon = {
-                            Icon(
-                                imageVector = dest.icon,
-                                contentDescription = dest.label,
-                                tint = if (selectedDestination == dest) TextPrimary else TextSecondary
-                            )
-                        },
-                        label = {
-                            Text(
-                                text = dest.label,
-                                color = if (selectedDestination == dest) TextPrimary else TextSecondary
-                            )
-                        },
-                        selected = selectedDestination == dest,
-                        onClick = {
-                            selectedDestination = dest
-                            scope.launch { drawerState.close() }
-                        },
-                        colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = TextSecondary.copy(alpha = 0.12f),
-                            unselectedContainerColor = SurfaceDark
-                        ),
-                        modifier = Modifier.padding(horizontal = 12.dp)
-                    )
-                    if (dest == Destination.RECORDINGS) {
-                        HorizontalDivider(
-                            color = TextSecondary.copy(alpha = 0.14f),
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                Column(Modifier.fillMaxHeight().padding(horizontal = 12.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("SET REC", style = BrandStyle, color = SrColor.TextPrimary)
+                        Text("Unofficial DJM/XDJ/FLX Recording", fontSize = 12.sp, lineHeight = 16.sp,
+                            color = SrColor.TextSecondary)
+                    }
+                    Destination.entries.forEach { dest ->
+                        NavigationDrawerItem(
+                            icon = { Icon(dest.icon, null, Modifier.size(20.dp)) },
+                            label = { Text(dest.label, fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                            badge = if (dest == Destination.RECORDING && recording) {
+                                {
+                                    Row(verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Box(Modifier.size(8.dp).background(SrColor.Rec, CircleShape))
+                                        Text("REC", style = MonoLabelStyle, color = SrColor.TextSecondary)
+                                    }
+                                }
+                            } else null,
+                            selected = selectedDestination == dest,
+                            onClick = {
+                                selectedDestination = dest
+                                scope.launch { drawerState.close() }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = NavigationDrawerItemDefaults.colors(
+                                selectedContainerColor = SrColor.SurfaceRaised,
+                                unselectedContainerColor = Color.Transparent,
+                                selectedTextColor = SrColor.TextPrimary,
+                                unselectedTextColor = SrColor.TextSecondary,
+                                selectedIconColor = SrColor.TextPrimary,
+                                unselectedIconColor = SrColor.TextSecondary,
+                            ),
+                            modifier = Modifier.height(48.dp)
                         )
                     }
+                    Spacer(Modifier.weight(1f))
+                    Text("V${BuildConfig.VERSION_NAME}", Modifier.padding(horizontal = 16.dp),
+                        style = MonoLabelStyle, color = SrColor.TextSecondary)
                 }
             }
         }
     ) {
         Scaffold(
-            containerColor = BackgroundDark,
+            containerColor = SrColor.Background,
             topBar = {
                 TopAppBar(
                     title = {
-                        Text(
-                            text = if (selectedDestination == Destination.RECORDING) "Set Recorder"
-                            else selectedDestination.label,
-                            color = TextPrimary
-                        )
+                        if (selectedDestination == Destination.RECORDING) Text("SET REC", style = BrandStyle)
+                        else Text(selectedDestination.label, fontSize = 22.sp, lineHeight = 28.sp)
                     },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(
-                                imageVector = Icons.Filled.Menu,
-                                contentDescription = "Menu",
-                                tint = TextPrimary
-                            )
+                            Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
+                    actions = {
+                        if (selectedDestination == Destination.RECORDING) {
+                            IconButton(onClick = { selectedDestination = Destination.SETTINGS }) {
+                                Icon(Icons.Filled.Tune, contentDescription = "Recording setup")
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = SrColor.Background,
+                        scrolledContainerColor = SrColor.Background,
+                        titleContentColor = SrColor.TextPrimary,
+                        navigationIconContentColor = SrColor.TextPrimary,
+                        actionIconContentColor = SrColor.TextPrimary,
+                    )
                 )
             }
         ) { padding ->
@@ -213,7 +227,10 @@ fun MainScreen(viewModel: MainViewModel) {
             Column(modifier = Modifier.fillMaxSize().padding(padding).navigationBarsPadding()) {
                 destinationState.SaveableStateProvider(selectedDestination.name) {
                 when (selectedDestination) {
-                    Destination.RECORDING -> RecorderScreen(viewModel = viewModel, onOpenLibrary = { selectedDestination = Destination.RECORDINGS })
+                    Destination.RECORDING -> RecorderScreen(
+                        viewModel = viewModel,
+                        onOpenLibrary = { selectedDestination = Destination.RECORDINGS }
+                    )
                     Destination.RECORDINGS -> LibraryScreen()
                     Destination.SETTINGS -> SettingsScreen(viewModel = viewModel)
                     Destination.DIAGNOSTICS -> DiagnosticsScreen()
@@ -223,3 +240,9 @@ fun MainScreen(viewModel: MainViewModel) {
         }
     }
 }
+
+private val BrandStyle = TextStyle(fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp)
+private val MonoLabelStyle = TextStyle(
+    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp,
+    letterSpacing = 0.9.sp
+)

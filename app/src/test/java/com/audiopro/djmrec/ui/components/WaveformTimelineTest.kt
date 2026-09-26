@@ -6,15 +6,21 @@ import org.junit.Test
 class WaveformTimelineTest {
     private fun snapshot(cursor: Int) = FloatArray(2050).apply { this[2048] = cursor.toFloat(); this[2049] = 6f }
 
-    @Test fun additiveBandsProducePrimariesAndMixedColors() {
-        assertEquals(0xffff0000.toInt(), waveformRgb(1f, 0f, 0f))
-        assertEquals(0xff00ff00.toInt(), waveformRgb(0f, 1f, 0f))
-        assertEquals(0xff0000ff.toInt(), waveformRgb(0f, 0f, 1f))
-        assertEquals(0xffffff00.toInt(), waveformRgb(1f, 1f, 0f))
-        assertEquals(0xff00ffff.toInt(), waveformRgb(0f, 1f, 1f))
-        assertEquals(0xffff00ff.toInt(), waveformRgb(1f, 0f, 1f))
-        assertEquals(0xffffffff.toInt(), waveformRgb(1f, 1f, 1f))
-        assertEquals(0xff000000.toInt(), waveformRgb(Float.NaN, -1f, 0f))
+    @Test fun loudestBandFillsTheEnvelopeAndOthersScale() {
+        val out = FloatArray(3)
+        bandHeights(0.25f, 0.4f, 0.1f, 0f, out)
+        assertEquals(0.5f, out[0], 0.0001f) // sqrt(0.25), the loudest band
+        assertTrue(out[1] > 0f && out[1] < out[0])
+        assertEquals(0f, out[2], 0f)
+    }
+
+    @Test fun silenceAndBadInputDrawNothing() {
+        val out = floatArrayOf(1f, 1f, 1f)
+        bandHeights(0f, 0.5f, 0.5f, 0.5f, out)
+        assertArrayEquals(floatArrayOf(0f, 0f, 0f), out, 0f)
+        out.fill(1f)
+        bandHeights(Float.NaN, Float.NaN, -1f, 0f, out)
+        assertArrayEquals(floatArrayOf(0f, 0f, 0f), out, 0f)
     }
 
     @Test fun snapshotsTranslateWithoutMorphingHistory() {

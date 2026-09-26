@@ -116,26 +116,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val saverActive: StateFlow<Boolean> = _saverActive.asStateFlow()
     private var lastInteractionAt = SystemClock.elapsedRealtime()
     private var appResumed = false
+    // Set by the recorder's Battery saver button; any touch, leaving the app or the end of the
+    // recording clears it.
+    private var saverRequested = false
 
     /** Any touch or key on the activity: leave the saver screen and restart the idle count. */
     fun noteUserInteraction() {
         lastInteractionAt = SystemClock.elapsedRealtime()
+        saverRequested = false
+        updateSaver()
+    }
+
+    /**
+     * Show the battery saver screen now. The tap that calls this has already been counted by
+     * [noteUserInteraction] (Android reports it on touch down, the click fires on touch up), so
+     * the request survives until the next touch.
+     */
+    fun showSaverNow() {
+        saverRequested = true
         updateSaver()
     }
 
     fun setAppResumed(resumed: Boolean) {
         appResumed = resumed
         lastInteractionAt = SystemClock.elapsedRealtime()
+        if (!resumed) saverRequested = false
         updateSaver()
     }
 
     private fun updateSaver() {
         val state = _recordingState.value
+        val recordingActive = state is RecordingState.Recording || state is RecordingState.Paused
+        if (!recordingActive) saverRequested = false
         val show = shouldShowSaver(
             enabled = batterySaverScreen.value,
-            recordingActive = state is RecordingState.Recording || state is RecordingState.Paused,
+            recordingActive = recordingActive,
             appResumed = appResumed,
             idleMillis = SystemClock.elapsedRealtime() - lastInteractionAt,
+            requested = saverRequested,
         )
         if (show == _saverActive.value) return
         _saverActive.value = show
