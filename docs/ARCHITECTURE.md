@@ -65,7 +65,12 @@ UsbAudioManager (Kotlin)     attach/permission → descriptors → profile/forma
 MainViewModel                wraps it in a CaptureSessionParams (label, rate, bit depth, source)
         │  CaptureSessionHandoff: the start Intent carries only a session id
         ▼
-RecordingService             foreground service, state, polling, health, files, notification
+RecordingService             foreground service: state, polling, start/stop orchestration
+                             ├ RecordingWriter        MediaStore file, crash journal, checkpoints,
+                             │                        WAV part roll, finish (off the main thread)
+                             ├ RecordingNotifications foreground promotion + NotificationModel
+                             ├ WakeLockHolder, DoNotDisturbController
+                             └ HealthSupervisor       per-tick deltas → health + safety stop
         │  AudioEngine.openUsbIso(source) → one positional JNI call
         ▼
 UsbIsoAudioSource (C++)      claim, keepalive OUT stream (implicit feedback), URBs, demux,
@@ -79,10 +84,10 @@ UsbAudioEngine (C++)         meter, waveform, ring buffer, encoder thread, WAV/F
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Commit in-tree work, repo hygiene, this document, `scripts/host-tests.sh` | done |
-| 1 | Bug fixes found in review (native use-after-free, `closeAfterSave`, rebind collectors, …) | done (1 deferred to phase 4) |
+| 1 | Bug fixes found in review (native use-after-free, `closeAfterSave`, rebind collectors, …) | done |
 | 2 | Delete dead and deprecated code | done |
 | 3 | `CaptureSessionParams`: one description of a session, one JNI call | done |
-| 4 | Split `RecordingService` (notifications, wake lock, writer, health supervisor) | |
+| 4 | Split `RecordingService` (notifications, wake lock, writer, health supervisor) | done |
 | 5 | `RecordingSession` state machine with a real Saving state and typed failures | |
 | 6 | `SettingsStore`, `AppGraph`, break the dependency cycles | |
 | 7 | Native: vendor control to Kotlin, `AudioSource`/`FrameSink`, RAII, lock split, host tests | |

@@ -12,8 +12,6 @@ import com.audiopro.djmrec.BuildConfig
  */
 object DemoMixer {
     const val DEVICE_NAME = "demo:mixer"
-    /** Passed as the AAudio device id; RecordingService routes it to the demo engine. */
-    const val AUDIO_DEVICE_ID = -4242
 
     val enabled: Boolean by lazy { BuildConfig.DEBUG && runningOnEmulator() }
 

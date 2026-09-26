@@ -1,14 +1,7 @@
 package com.audiopro.djmrec.service
 
-import android.Manifest
-
-import android.app.Notification
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -17,45 +10,38 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.app.NotificationChannelCompat
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.audiopro.djmrec.DjmRecApplication
-import com.audiopro.djmrec.MainActivity
-import com.audiopro.djmrec.R
 import com.audiopro.djmrec.audio.AudioEngine
 import com.audiopro.djmrec.audio.ChannelLevel
 import com.audiopro.djmrec.audio.RecordingFormat
 import com.audiopro.djmrec.audio.RecordingHealth
-import com.audiopro.djmrec.audio.RecordingHealthEvaluator
-import com.audiopro.djmrec.audio.RecordingHealthInput
 import com.audiopro.djmrec.audio.RecordingHealthLevel
 import com.audiopro.djmrec.audio.RecordingState
 import com.audiopro.djmrec.audio.SignalDetector
 import com.audiopro.djmrec.audio.StereoLevels
 import com.audiopro.djmrec.domain.CaptureSessionParams
 import com.audiopro.djmrec.domain.CaptureSource
-import com.audiopro.djmrec.storage.PendingRecordingOutput
+import com.audiopro.djmrec.domain.HealthSample
+import com.audiopro.djmrec.domain.HealthSupervisor
 import com.audiopro.djmrec.storage.RecordingOutputManager
-import com.audiopro.djmrec.storage.RecordingSessionStore
 import com.audiopro.djmrec.storage.RecordingStoragePolicy
+import com.audiopro.djmrec.storage.RecordingWriter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withContext
 
 /**
  * Foreground service hosting the entire recording session so the OS cannot kill the process
  * mid-capture. Exposes a [LocalBinder] for the UI's ViewModel to observe state directly, and
  * also reacts to notification action buttons (Pause/Resume/Stop) via `onStartCommand`.
+ *
+ * It orchestrates; the work is done by [RecordingWriter] (files and journal),
+ * [RecordingNotifications], [WakeLockHolder], [HealthSupervisor] and [DoNotDisturbController].
  */
 class RecordingService : LifecycleService() {
 
@@ -74,14 +60,11 @@ class RecordingService : LifecycleService() {
         private const val DEFAULT_DEVICE_LABEL = "USB Mixer"
 
         private const val TAG = "RecordingService"
-        private const val CHANNEL_ID = "recording_channel"
-        private const val NOTIFICATION_ID = 1001
         private const val METER_UPDATE_INTERVAL_MS = 66L // ~15 fps, plenty for a VU meter
         private const val WAVEFORM_UPDATE_INTERVAL_MS = 33L // ~30 snapshots/s; UI scrolls at up to 60 fps
         private const val NOTIFICATION_UPDATE_INTERVAL_MS = 1_000L
         private const val HEALTH_UPDATE_INTERVAL_MS = 2_000L
-        private const val CHECKPOINT_INTERVAL_MS = 5_000L
-        private const val MAX_STALLED_USB_CHECKS = 3
+        private const val BLOCKED_MESSAGE = "Android blocked the recording service -- open the app and try again"
         /** Shared with MainViewModel, which owns the Settings toggle. */
         const val KEY_DND_WHILE_RECORDING = "dnd_while_recording"
     }
@@ -118,10 +101,19 @@ class RecordingService : LifecycleService() {
     private val _health = MutableStateFlow(RecordingHealth.Ready)
     val health: StateFlow<RecordingHealth> = _health.asStateFlow()
 
-    private var wakeLock: PowerManager.WakeLock? = null
+    private val _saving = MutableStateFlow(false)
+    val saving: StateFlow<Boolean> = _saving.asStateFlow()
+
+    private val writer by lazy { RecordingWriter(this) }
+    private val notifications by lazy { RecordingNotifications(this) }
+    private val wakeLock by lazy { WakeLockHolder(getSystemService(Context.POWER_SERVICE) as PowerManager) }
+    /** Owned by the monitor thread, like [signalDetector]. */
+    private val healthSupervisor = HealthSupervisor()
 
     /** Silences calls and notifications for the length of a set; see DoNotDisturbController. */
     private val doNotDisturb by lazy { DoNotDisturbController(this) }
+
+    private val events get() = (application as DjmRecApplication).sessionEvents
 
     /**
      * Read at the moment it is needed rather than cached at startup, so toggling the setting
@@ -131,9 +123,8 @@ class RecordingService : LifecycleService() {
     private fun readSetting(key: String, fallback: Boolean): Boolean =
         getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean(key, fallback)
 
-    // Dedicated urgent-audio-priority thread for pulling meter/elapsed data off the native
-    // engine and refreshing the notification — kept separate from the main/UI thread so meter
-    // polling never gets starved by UI work, matching the spec's thread-priority requirement.
+    // Dedicated thread for pulling meter/elapsed data off the native engine, refreshing the
+    // notification and running the health checks, so none of it is starved by UI work.
     private lateinit var monitorThread: HandlerThread
     private lateinit var monitorHandler: Handler
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -141,10 +132,6 @@ class RecordingService : LifecycleService() {
     private var currentFormat: RecordingFormat = RecordingFormat.WAV
     private var currentBitDepth: Int = 24
     private var pendingRecordingFormat: RecordingFormat? = null
-    private var currentOutput: PendingRecordingOutput? = null
-    private var currentSessionId: String? = null
-    private var currentPartIndex = 0
-    private var currentPartStartedElapsed = 0L
     private var currentSampleRate = 48_000
     private var currentOutputChannels = 2
     private var bytesPerSecond = RecordingStoragePolicy.worstCaseBytesPerSecond(48_000, 2, 24)
@@ -162,13 +149,11 @@ class RecordingService : LifecycleService() {
     private var waveformEnabled = true
     @Volatile private var uiVisible = false
     @Volatile private var waveformVisible = false
-    private var lastCheckpointRealtime = 0L
-    private var lastUsbStats = LongArray(7)
-    private var usbHealthInitialized = false
-    private var stalledUsbChecks = 0
-    private var lastXRunCount = 0
     @Volatile
     private var safetyStopPending = false
+    private var closeAfterSave = false
+    /** The mixer went away while a recording was being saved; handle it once the save lands. */
+    private var detachAfterSave = false
 
     /** True while a capture session exists in any form (arming, monitoring, recording, paused). */
     private fun sessionAlive(): Boolean =
@@ -225,8 +210,8 @@ class RecordingService : LifecycleService() {
     private val healthRunnable = object : Runnable {
         override fun run() {
             if (!sessionAlive()) return
-            // Renews the wake lock's safety timeout every tick; see acquireWakeLock().
-            acquireWakeLock()
+            // Renews the wake lock's safety timeout every tick; see WakeLockHolder.renew().
+            wakeLock.renew()
             if (!captureActive()) {
                 monitorHandler.postDelayed(this, HEALTH_UPDATE_INTERVAL_MS)
                 return
@@ -243,60 +228,29 @@ class RecordingService : LifecycleService() {
             val freeBytes = RecordingOutputManager.freeBytes()
             val remaining = if (freeBytes < 0) Long.MAX_VALUE
             else RecordingStoragePolicy.remainingSeconds(freeBytes, bytesPerSecond)
-            val stats = AudioEngine.getUsbIsoTransferStats()
-            val packetDelta = if (usbHealthInitialized) stats.getOrElse(0) { 0 } - lastUsbStats.getOrElse(0) { 0 } else 1
-            val byteDelta = if (usbHealthInitialized) stats.getOrElse(4) { 0 } - lastUsbStats.getOrElse(4) { 0 } else 1
-            val nonZeroDelta = if (usbHealthInitialized) stats.getOrElse(5) { 0 } - lastUsbStats.getOrElse(5) { 0 } else 1
-            val missedDelta = if (usbHealthInitialized) stats.getOrElse(1) { 0 } - lastUsbStats.getOrElse(1) { 0 } else 0
-            val resubmitDelta = if (usbHealthInitialized) stats.getOrElse(6) { 0 } - lastUsbStats.getOrElse(6) { 0 } else 0
-            val xRunCount = AudioEngine.getXRunCount()
-            val xRunDelta = (xRunCount - lastXRunCount).coerceAtLeast(0)
-            lastUsbStats = stats
-            lastXRunCount = xRunCount
-            usbHealthInitialized = true
-
-            val health = RecordingHealthEvaluator.evaluate(
-                RecordingHealthInput(
+            val verdict = healthSupervisor.evaluate(
+                HealthSample(
                     recording = recording,
                     usbIso = isUsbIsoSession,
                     streamOpen = AudioEngine.isStreamOpen(),
                     freeBytes = freeBytes,
                     remainingSeconds = remaining,
-                    packetDelta = packetDelta,
-                    byteDelta = byteDelta,
-                    nonZeroByteDelta = nonZeroDelta,
-                    missedPacketDelta = missedDelta,
-                    resubmitFailures = resubmitDelta,
-                    xRuns = xRunDelta,
+                    usbStats = AudioEngine.getUsbIsoTransferStats(),
+                    xRunCount = AudioEngine.getXRunCount(),
                     writerErrorCode = AudioEngine.getRecordingErrorCode(),
                     signalPresent = _signalPresent.value
                 )
             )
-            _health.value = health
-            com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health("${health.level}: ${health.message}")
+            _health.value = verdict.health
+            com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health("${verdict.health.level}: ${verdict.health.message}")
 
-            stalledUsbChecks = if (isUsbIsoSession && packetDelta <= 0) stalledUsbChecks + 1 else 0
             if (recording) {
                 checkpointIfDue()
-                when {
-                    health.level == RecordingHealthLevel.ERROR -> requestSafetyStop(health.message)
-                    health.level == RecordingHealthLevel.LOW_STORAGE -> requestSafetyStop(health.message)
-                    stalledUsbChecks >= MAX_STALLED_USB_CHECKS ->
-                        requestSafetyStop("USB audio stopped. Recording finalized safely.")
-                }
+                verdict.safetyStopReason?.let { requestSafetyStop(it) }
             }
             monitorHandler.postDelayed(this, HEALTH_UPDATE_INTERVAL_MS)
         }
     }
-
-    private val WAKE_LOCK_TIMEOUT_MS = TimeUnit.HOURS.toMillis(6)
-
-    private val events get() = (application as DjmRecApplication).sessionEvents
-    private val _saving = MutableStateFlow(false)
-    val saving: StateFlow<Boolean> = _saving.asStateFlow()
-    private var closeAfterSave = false
-    /** The mixer went away while a recording was being saved; handle it once the save lands. */
-    private var detachAfterSave = false
 
     override fun onCreate() {
         super.onCreate()
@@ -319,7 +273,7 @@ class RecordingService : LifecycleService() {
         val settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
         setRecordingGainDb(settings.getInt("recording_gain_db", 0))
         setSilenceHoldMs(settings.getLong("silence_hold_ms", SignalDetector.DEFAULT_HOLD_MS))
-        createNotificationChannel()
+        notifications.createChannel()
         lifecycleScope.launch {
             var previous: String? = null
             (application as DjmRecApplication).usbAudioManager.deviceState.collect { device ->
@@ -399,13 +353,10 @@ class RecordingService : LifecycleService() {
         }
         when (intent?.action) {
             ACTION_STOP_ALL -> stopAndClose()
-            ACTION_MARK_TRACK -> synchronized(this) {
-                if (_state.value is RecordingState.Recording) currentOutput?.let { output ->
-                    runCatching {
-                        events.markerCount.value = com.audiopro.djmrec.storage.TrackMarkerStore.add(
-                            this, output.uri, AudioEngine.getElapsedMillis() - currentPartStartedElapsed)
-                    }.onFailure { _health.value = RecordingHealth(RecordingHealthLevel.ERROR, "Could not save track marker; audio is still recording") }
-                }
+            ACTION_MARK_TRACK -> if (_state.value is RecordingState.Recording) {
+                runCatching { writer.addMarker() }
+                    .onSuccess { count -> if (count != null) events.markerCount.value = count }
+                    .onFailure { _health.value = RecordingHealth(RecordingHealthLevel.ERROR, "Could not save track marker; audio is still recording") }
             }
             ACTION_MONITOR -> {
                 if (_state.value is RecordingState.Monitoring ||
@@ -420,7 +371,7 @@ class RecordingService : LifecycleService() {
                 // Promote before native USB open/rate probing can block.
                 if (!startForegroundNotification()) {
                     discardUnusedIsoHandle(offered)
-                    _state.value = RecordingState.Error("Android blocked the recording service -- open the app and try again")
+                    _state.value = RecordingState.Error(BLOCKED_MESSAGE)
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -450,7 +401,7 @@ class RecordingService : LifecycleService() {
                 _state.value = RecordingState.Preparing
                 if (!startForegroundNotification()) {
                     discardUnusedIsoHandle(offered)
-                    _state.value = RecordingState.Error("Android blocked the recording service -- open the app and try again")
+                    _state.value = RecordingState.Error(BLOCKED_MESSAGE)
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -551,11 +502,11 @@ class RecordingService : LifecycleService() {
             beginEncodingOrFail(currentBitDepth, queuedFormat)
             return
         }
-        acquireWakeLock()
+        wakeLock.renew()
         if (!startForegroundNotification()) {
             AudioEngine.close()
             releaseIsoConnectionIfNeeded()
-            failPreparation("Android blocked the recording service -- open the app and try again")
+            failPreparation(BLOCKED_MESSAGE)
             stopSelf()
             return
         }
@@ -580,58 +531,22 @@ class RecordingService : LifecycleService() {
             return
         }
 
-        val sessionId = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         events.markerCount.value = 0
         events.lastSaved.value = null
-        val output = RecordingOutputManager.create(this, sessionId, format, 1)
-        if (output == null) {
-            failEncoding("Failed to create recording in Music/DJMRec")
-            return
-        }
-
-        val journalStarted = runCatching {
-            RecordingSessionStore.begin(
-                this,
-                sessionId,
-                format,
-                currentSampleRate,
-                bitDepth,
-                deviceLabel,
-                output.toRecord()
-            )
-        }.isSuccess
-        if (!journalStarted) {
-            RecordingOutputManager.abandon(this, output)
-            failEncoding("Failed to create crash-recovery journal")
-            return
-        }
         currentFormat = format
-        val started = AudioEngine.startRecordingFd(output.descriptor.fd, format.nativeValue)
-        runCatching { output.descriptor.close() }
-        if (!started) {
-            RecordingOutputManager.abandon(this, output)
-            RecordingSessionStore.complete(this)
-            failEncoding("Failed to start ${format.name} encoder")
+        val started = writer.start(format, currentSampleRate, bitDepth, deviceLabel)
+        if (started is RecordingWriter.StartResult.Failed) {
+            failEncoding(started.message)
             return
         }
-
-        currentOutput = output
-        currentSessionId = sessionId
-        currentPartIndex = 1
-        currentPartStartedElapsed = 0L
-        lastCheckpointRealtime = 0L
         safetyStopPending = false
 
-        acquireWakeLock()
+        wakeLock.renew()
         if (!startForegroundNotification()) {
-            AudioEngine.stopRecording()
+            writer.abandonStart()
             AudioEngine.close()
             releaseIsoConnectionIfNeeded()
-            RecordingOutputManager.abandon(this, output)
-            RecordingSessionStore.complete(this)
-            currentOutput = null
-            currentSessionId = null
-            failPreparation("Android blocked the recording service -- open the app and try again")
+            failPreparation(BLOCKED_MESSAGE)
             stopSelf()
             return
         }
@@ -648,8 +563,6 @@ class RecordingService : LifecycleService() {
     private fun failEncoding(message: String) {
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
-        currentOutput = null
-        currentSessionId = null
         failPreparation(message)
     }
 
@@ -665,81 +578,28 @@ class RecordingService : LifecycleService() {
     }
 
     private fun startPolling() {
-        resetHealthTracking()
+        safetyStopPending = false
         monitorHandler.removeCallbacks(meterRunnable)
         monitorHandler.removeCallbacks(waveformRunnable)
         monitorHandler.removeCallbacks(notificationRunnable)
         monitorHandler.removeCallbacks(healthRunnable)
+        monitorHandler.post { healthSupervisor.reset() }
         monitorHandler.post(meterRunnable)
         monitorHandler.post(waveformRunnable)
         monitorHandler.post(notificationRunnable)
         monitorHandler.post(healthRunnable)
     }
 
-    private fun resetHealthTracking() {
-        lastUsbStats = LongArray(7)
-        usbHealthInitialized = false
-        stalledUsbChecks = 0
-        lastXRunCount = 0
-        safetyStopPending = false
-    }
-
-    @Synchronized
+    /** Monitor thread, while recording. */
     private fun checkpointIfDue() {
         if (_saving.value) return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastCheckpointRealtime < CHECKPOINT_INTERVAL_MS) return
-        lastCheckpointRealtime = now
-        val partBytes = AudioEngine.checkpointRecording()
-        if (partBytes < 0) {
-            requestSafetyStop("Could not checkpoint recording. File finalized at last safe point.")
-            return
-        }
-        val journalSaved = runCatching {
-            RecordingSessionStore.checkpoint(this, AudioEngine.getElapsedMillis())
-        }.isSuccess
-        if (!journalSaved) {
-            requestSafetyStop("Could not save recovery checkpoint. Recording finalized safely.")
-            return
-        }
-        if (currentFormat == RecordingFormat.WAV && RecordingStoragePolicy.shouldRollWav(partBytes)) {
-            rollWavPart()
-        }
-    }
-
-    private fun rollWavPart() {
-        val sessionId = currentSessionId ?: return
-        val previous = currentOutput ?: return
-        val nextIndex = currentPartIndex + 1
-        val next = RecordingOutputManager.create(this, sessionId, RecordingFormat.WAV, nextIndex)
-        if (next == null) {
-            requestSafetyStop("Could not create next WAV part. Recording finalized safely.")
-            return
-        }
-        val rolled = AudioEngine.rollRecordingFd(next.descriptor.fd, RecordingFormat.WAV.nativeValue)
-        runCatching { next.descriptor.close() }
-        if (!rolled) {
-            RecordingOutputManager.abandon(this, next)
-            requestSafetyStop("Could not continue WAV recording. Current part finalized safely.")
-            return
-        }
-
-        val elapsed = AudioEngine.getElapsedMillis()
-        val partJournaled = runCatching { RecordingSessionStore.addPart(this, next.toRecord()) }.isSuccess
-        val previousFinalized = RecordingOutputManager.finalize(
-            this,
-            previous,
-            elapsed - currentPartStartedElapsed
-        )
-        if (previousFinalized) RecordingSessionStore.markFinalized(this, previous.uri)
-        currentOutput = next
-        currentPartIndex = nextIndex
-        currentPartStartedElapsed = elapsed
-        events.markerCount.value = 0
-        if (!partJournaled) {
-            requestSafetyStop("Could not journal next WAV part. Recording stopped safely.")
-        } else if (!previousFinalized) {
-            requestSafetyStop("Previous WAV part could not be published. Recording stopped safely.")
+        when (val result = writer.checkpointIfDue(SystemClock.elapsedRealtime())) {
+            RecordingWriter.CheckpointResult.Ok -> Unit
+            is RecordingWriter.CheckpointResult.Rolled -> {
+                events.markerCount.value = 0
+                result.problem?.let { requestSafetyStop(it) }
+            }
+            is RecordingWriter.CheckpointResult.Failed -> requestSafetyStop(result.message)
         }
     }
 
@@ -748,7 +608,7 @@ class RecordingService : LifecycleService() {
         safetyStopPending = true
         mainHandler.post {
             if (!_saving.value && (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused)) {
-                stopSessionWithError(message)
+                finishRecording(message)
             } else {
                 safetyStopPending = false
             }
@@ -766,7 +626,7 @@ class RecordingService : LifecycleService() {
         pendingRecordingFormat = null
         _state.value = RecordingState.Error(message)
         _health.value = RecordingHealth(RecordingHealthLevel.ERROR, message)
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        notifications.stopForeground()
     }
 
     fun pauseSession() {
@@ -791,7 +651,7 @@ class RecordingService : LifecycleService() {
             releaseIsoConnectionIfNeeded()
             _state.value = RecordingState.Idle
             _health.value = RecordingHealth.Ready
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            notifications.stopForeground()
             stopSelf()
             return
         }
@@ -800,51 +660,60 @@ class RecordingService : LifecycleService() {
             if (_state.value is RecordingState.Monitoring) {
                 AudioEngine.close()
                 releaseIsoConnectionIfNeeded()
-                releaseWakeLock()
+                wakeLock.release()
                 _state.value = RecordingState.Idle
                 _elapsedMillis.value = 0L
                 _levels.value = StereoLevels(floorLevel, floorLevel)
                 resetSignalDetector()
                 _waveformBins.value = emptyWaveform
                 _health.value = RecordingHealth.Ready
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                notifications.stopForeground()
                 stopSelf()
             }
             return
         }
+        finishRecording()
+    }
+
+    /**
+     * The one way a recording ends: stops the encoder and publishes the file on an IO thread,
+     * then either returns to monitoring (a normal save) or closes capture and shows
+     * [errorMessage] (a safety stop or an unplug). Commands are refused while [saving].
+     */
+    private fun finishRecording(errorMessage: String? = null) {
+        if (_saving.value) return
+        pendingRecordingFormat = null
         _saving.value = true
         updateNotification()
         lifecycleScope.launch {
-            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                synchronized(this@RecordingService) { runCatching {
-                    val savedOutput = currentOutput
-                    val partStart = currentPartStartedElapsed
-                    val duration = AudioEngine.stopRecording()
-                    val finalized = finalizeCurrentOutput(duration)
-                    val complete = finalized && RecordingSessionStore.completeIfFinalized(this@RecordingService)
-                    Triple((duration - partStart).coerceAtLeast(0L), complete, savedOutput)
-                } }
-            }
-            currentSessionId = null
-            currentPartIndex = 0
-            val (duration, complete, savedOutput) = result.getOrDefault(Triple(0L, false, null))
-            if (!complete) {
-                stopSessionWithError("Recording stopped; publication failed. Recovery will retry on next launch.", alreadyStopped = true)
-            } else {
-                savedOutput?.let { events.lastSaved.value = com.audiopro.djmrec.audio.SavedRecording(it.uri, it.displayName, duration) }
+            val result = withContext(Dispatchers.IO) { writer.finish() }
+            val failure = errorMessage
+                ?: if (!result.complete) "Recording stopped; publication failed. Recovery will retry on next launch." else null
+            if (failure == null) {
+                result.saved?.let { events.lastSaved.value = it }
                 _state.value = RecordingState.Monitoring
                 isMonitoringOnly = true
                 _elapsedMillis.value = 0L
                 _health.value = RecordingHealth(RecordingHealthLevel.GOOD, "Saved to Music/DJMRec", RecordingOutputManager.freeBytes(), Long.MAX_VALUE)
-                safetyStopPending = false
+            } else {
+                AudioEngine.close()
+                releaseIsoConnectionIfNeeded()
+                wakeLock.release()
+                isMonitoringOnly = false
+                _state.value = RecordingState.Error(failure)
+                _health.value = RecordingHealth(RecordingHealthLevel.ERROR, failure, RecordingOutputManager.freeBytes(), 0)
+                notifications.stopForeground()
             }
+            safetyStopPending = false
             _saving.value = false
-            if (complete) updateNotification()
+            if (failure == null) updateNotification()
             if (closeAfterSave) {
                 closeCaptureAndTask()
             } else if (detachAfterSave) {
                 detachAfterSave = false
-                handleDeviceDetached()
+                // After an error stop capture is already closed; the detach has nothing left to do
+                // and would only replace the more specific message.
+                if (failure == null) handleDeviceDetached()
             }
         }
     }
@@ -862,46 +731,15 @@ class RecordingService : LifecycleService() {
         detachAfterSave = false
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
-        releaseWakeLock()
+        wakeLock.release()
         monitorHandler.removeCallbacksAndMessages(null)
         _state.value = RecordingState.Idle
         _levels.value = StereoLevels(floorLevel, floorLevel)
         resetSignalDetector()
         _waveformBins.value = emptyWaveform
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        notifications.stopForeground()
         (getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).appTasks.forEach { it.finishAndRemoveTask() }
         stopSelf()
-    }
-
-    private fun finalizeCurrentOutput(totalDurationMillis: Long): Boolean {
-        val output = currentOutput ?: return true
-        val partDuration = (totalDurationMillis - currentPartStartedElapsed).coerceAtLeast(0)
-        val finalized = RecordingOutputManager.finalize(this, output, partDuration)
-        if (finalized) runCatching { RecordingSessionStore.markFinalized(this, output.uri) }
-        currentOutput = null
-        return finalized
-    }
-
-    @Synchronized
-    private fun stopSessionWithError(message: String, alreadyStopped: Boolean = false) {
-        val duration = if (alreadyStopped) AudioEngine.getElapsedMillis() else AudioEngine.stopRecording()
-        val finalized = finalizeCurrentOutput(duration)
-        if (finalized) RecordingSessionStore.completeIfFinalized(this)
-        AudioEngine.close()
-        releaseIsoConnectionIfNeeded()
-        releaseWakeLock()
-        currentSessionId = null
-        currentPartIndex = 0
-        isMonitoringOnly = false
-        _state.value = RecordingState.Error(message)
-        _health.value = RecordingHealth(
-            RecordingHealthLevel.ERROR,
-            message,
-            RecordingOutputManager.freeBytes(),
-            0
-        )
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        safetyStopPending = false
     }
 
     private fun handleDeviceDetached() {
@@ -910,28 +748,28 @@ class RecordingService : LifecycleService() {
         if (_saving.value) { detachAfterSave = true; return }
         pendingRecordingFormat = null
         if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused) {
-            stopSessionWithError("USB mixer disconnected. Recording finalized safely.")
+            finishRecording("USB mixer disconnected. Recording finalized safely.")
             return
         }
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
-        releaseWakeLock()
+        wakeLock.release()
         _state.value = RecordingState.Error("USB mixer disconnected")
         _health.value = RecordingHealth(RecordingHealthLevel.ERROR, "USB mixer disconnected")
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        notifications.stopForeground()
     }
 
-    @Synchronized
     override fun onDestroy() {
         if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused) {
-            val duration = AudioEngine.stopRecording()
-            if (finalizeCurrentOutput(duration)) RecordingSessionStore.completeIfFinalized(this)
+            // Synchronous on purpose: the lifecycle scope is already cancelled, and the file must
+            // be published before the process can go.
+            writer.finish()
         }
         if (_state.value !is RecordingState.Idle) {
             AudioEngine.close()
             releaseIsoConnectionIfNeeded()
         }
-        releaseWakeLock()
+        wakeLock.release()
         // The state collector is already cancelled by the time we get here, so the phone would
         // otherwise stay silenced after the service goes away.
         doNotDisturb.release()
@@ -940,155 +778,22 @@ class RecordingService : LifecycleService() {
         super.onDestroy()
     }
 
-    // --- WakeLock -----------------------------------------------------------------------
-
-    private fun acquireWakeLock() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        val lock = wakeLock ?: powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK, "djmrec:recording"
-        ).apply { setReferenceCounted(false) }.also { wakeLock = it }
-        // Non-reference-counted: calling acquire(timeout) on an already-held lock simply pushes
-        // the safety timeout out again. healthRunnable calls this every tick for the life of the
-        // session, so a 6 h ceiling can never expire underneath a long set as long as the
-        // service is alive; if the process dies the lock dies with it.
-        lock.acquire(WAKE_LOCK_TIMEOUT_MS)
-    }
-
-    private fun releaseWakeLock() {
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-    }
-
     // --- Notification --------------------------------------------------------------------
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannelCompat.Builder(CHANNEL_ID, android.app.NotificationManager.IMPORTANCE_LOW)
-            .setName(getString(R.string.notification_channel_name))
-            .setDescription(getString(R.string.notification_channel_desc))
-            .setShowBadge(false)
-            .build()
-        NotificationManagerCompat.from(this).createNotificationChannel(channel)
-    }
+    private fun notificationModel(): NotificationModel = NotificationModel.from(
+        recording = _state.value is RecordingState.Recording,
+        paused = _state.value is RecordingState.Paused,
+        saving = _saving.value,
+        elapsedMillis = _elapsedMillis.value,
+        signalPresent = _signalPresent.value,
+        deviceLabel = deviceLabel
+    )
 
-    /**
-     * Returns false instead of crashing when the OS refuses foreground promotion. On Android 14+
-     * a microphone-type foreground service also needs the app to have been interacted with
-     * recently, which a device-attach auto-start can miss; the refusal is a SecurityException
-     * from `startForeground()` itself, after the caller's start already succeeded.
-     */
-    private fun startForegroundNotification(): Boolean {
-        val notification = buildNotification()
-        // minSdk is 29 (Q), so the ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE overload is
-        // always available — no legacy startForeground(id, notification) fallback needed.
-        val foregroundType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (isUsbIsoSession) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            else ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        } else {
-            0
-        }
-        return try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, foregroundType)
-            true
-        } catch (e: SecurityException) {
-            Log.w(TAG, "startForeground refused by the OS: ${e.message}")
-            false
-        } catch (e: IllegalStateException) {
-            Log.w(TAG, "startForeground refused by the OS: ${e.message}")
-            false
-        }
-    }
+    private fun startForegroundNotification(): Boolean =
+        notifications.startForeground(notificationModel(), isUsbIsoSession)
 
     private fun updateNotification() {
         if (events.closeRequested.value && !_saving.value) return
-        val canNotify = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-        if (canNotify) {
-            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, buildNotification())
-        }
-    }
-
-    private fun buildNotification(): Notification {
-        val isPaused = _state.value is RecordingState.Paused
-        val isRecording = _state.value is RecordingState.Recording || isPaused
-        val elapsed = formatElapsed(_elapsedMillis.value)
-        val hasSignal = _signalPresent.value
-
-        val contentIntent = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val toggleAction = if (isPaused) {
-            NotificationCompat.Action(
-                android.R.drawable.ic_media_play, getString(R.string.action_resume),
-                servicePendingIntent(ACTION_RESUME)
-            )
-        } else {
-            NotificationCompat.Action(
-                android.R.drawable.ic_media_pause, getString(R.string.action_pause),
-                servicePendingIntent(ACTION_PAUSE)
-            )
-        }
-        val title = when {
-            _saving.value -> "Saving your set..."
-            isPaused -> getString(R.string.notification_title_paused)
-            isRecording -> getString(R.string.notification_title_recording, deviceLabel)
-            else -> "$deviceLabel connected"
-        }
-        val text = when {
-            isRecording -> getString(R.string.notification_text_elapsed, elapsed) +
-                if (hasSignal && !isPaused) " | signal" else ""
-            else -> if (hasSignal) "USB signal ready" else "Waiting for mixer signal"
-        }
-
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setContentIntent(contentIntent)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-        if (isRecording) {
-            builder.addAction(toggleAction)
-            builder.addAction(
-                NotificationCompat.Action(
-                    android.R.drawable.ic_menu_close_clear_cancel,
-                    "Save & close",
-                    servicePendingIntent(ACTION_STOP_ALL)
-                )
-            )
-        }
-        if (!isRecording) {
-            builder.addAction(
-                NotificationCompat.Action(
-                    android.R.drawable.ic_menu_close_clear_cancel,
-                    "Stop & close",
-                    servicePendingIntent(ACTION_STOP_ALL)
-                )
-            )
-        }
-        return builder.build()
-    }
-
-    private fun servicePendingIntent(action: String): PendingIntent {
-        val intent = Intent(this, RecordingService::class.java).setAction(action)
-        return PendingIntent.getService(
-            this, action.hashCode(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    private fun formatElapsed(millis: Long): String {
-        val totalSeconds = millis / 1000
-        val hours = totalSeconds / 3600
-        val minutes = (totalSeconds % 3600) / 60
-        val seconds = totalSeconds % 60
-        return if (hours > 0) {
-            String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            String.format(Locale.US, "%02d:%02d", minutes, seconds)
-        }
+        notifications.update(notificationModel())
     }
 }
