@@ -70,7 +70,7 @@ fun BatterySaverScreen(viewModel: MainViewModel) {
     val timeFormat = remember { DateFormat.getTimeFormat(context) }
 
     // Burn-in guard: move the block to a new spot every minute.
-    val minute = wallClock / 60_000L
+    val minute = (wallClock / 60_000L).toInt()
     val dx = ((minute * 7) % 5 - 2) * 6
     val dy = ((minute * 3) % 5 - 2) * 10
 
