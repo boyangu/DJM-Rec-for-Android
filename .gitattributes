@@ -31,6 +31,7 @@ gradlew text eol=lf
 *.gif binary
 *.ico binary
 *.wav binary
+*.flac binary
 *.jar binary
 *.so binary
 *.apk binary

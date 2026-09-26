@@ -13,6 +13,13 @@ JDK 17, Android SDK, NDK 26.1, CMake 3.22.1 required. Open in Android Studio or 
 ./gradlew assembleDebug
 ```
 
+## Running it without a mixer
+
+Debug builds run in the Android emulator with a demo mixer standing in for the USB hardware.
+`scripts/run-dev.ps1` builds, starts the emulator, installs and launches (see the script header
+for the one-time SDK setup). The structure of the code and the refactor in progress are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Before submitting
 
 - Lint must pass: `./gradlew lintDebug`
@@ -69,6 +76,9 @@ cmake -S app/src/test/cpp -B build/native-tests
 cmake --build build/native-tests
 ctest --test-dir build/native-tests --output-on-failure
 ```
+
+or `scripts/host-tests.sh`, which does the same and falls back to plain g++ when cmake is missing
+(on Windows: `wsl -- bash scripts/host-tests.sh`).
 
 When touching a mixer profile, cross-check the wire format and route option codes against the
 Linux kernel's `sound/usb/quirks-table.h` and `sound/usb/mixer_quirks.c` (snd_djm_* tables) and

@@ -69,11 +69,6 @@ captures/
 .idea/navEditor.xml
 .idea/deploymentTargetSelector.xml
 
-# Keystore files
-# Uncomment if using release keystore
-# app/*.jks
-# app/*.keystore
-
 # External native build folder generated in Android Studio 2.2+
 .externalNativeBuild/
 .cxx/
@@ -89,6 +84,11 @@ cmake-build-*/
 .DS_Store
 Thumbs.db
 
+# Test recordings and source tracks used for capture forensics (tools/audio). Keep them local.
+*.wav
+*.flac
+samples/
+
 # =============================================================================
 # Third-party source — intentionally NOT vendored
 # =============================================================================
@@ -98,10 +98,6 @@ Thumbs.db
 # Do not commit them to the open-source repository.
 windows_driver/
 research_drivers/
-app/src/main/cpp/third_party/lame/
-# LAME (LGPL) must be added manually by the integrator.
-# See README.md for instructions.
-app/src/main/cpp/third_party/lame/
 
 # =============================================================================
 # IDE-specific

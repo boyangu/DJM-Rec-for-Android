@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Move the audio forensics scripts (`find_clicks.py`, `find_echo.py`, `repair_zero_holes.py`) from
+  `scripts/` to `tools/audio/`, with a README. `scripts/` now holds build and dev scripts only.
 - Debug builds run in the Android emulator on a PC. On an emulator with no USB device, a demo
   mixer stands in for the hardware and plays a synthetic 124 BPM loop through the real native
   audio path, so meters, waveform, recording and the battery saver screen all work without a
@@ -37,9 +39,9 @@
   `playback_pacing=` diagnostic line shows how many packets were mirrored. This is the suspected
   root cause of the FLX10's padding packets; `zero_packets_dropped` on a new recording will show
   whether it was.
-- `scripts/find_clicks.py` now checks for these zero holes before anything else. Its musical-grid
+- `tools/audio/find_clicks.py` now checks for these zero holes before anything else. Its musical-grid
   test had called them music: a hole every ~0.12 s lands on a sixteenth note at ~124 BPM.
-- Add `scripts/repair_zero_holes.py`, which removes the holes from recordings made before this
+- Add `tools/audio/repair_zero_holes.py`, which removes the holes from recordings made before this
   fix. Because the holes were inserted rather than cut in, the repair is lossless.
 
 ## v0.47.1 (2026-09-23)
