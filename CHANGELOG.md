@@ -1,7 +1,50 @@
 # Changelog
 
-## Unreleased
+## v0.48.0 (2026-09-26)
 
+- Log every lost USB packet. Each one writes a line with how many packets went, the USB status,
+  the exact source frame (so it maps to a position in the file, from the "Recording starts at
+  source frame" line), the time since the previous loss and how long the capture thread had gone
+  between checks. The exported diagnostic report carries them.
+- Keep the last 512 USB packet losses inside the capture itself and print them in the diagnostic
+  report (`recent_misses=` in the native snapshot, with the recording's start frame beside it), so
+  a whole set's losses survive; the shared logcat buffer held under a minute of them. The new
+  `tools/audio/match_misses.py` reads that block against the WAV and reports the step at each one.
+- Redesign the app to the SET REC design system: a dark, monochrome look where colour is kept
+  for the signal and for recording.
+  - Settings is one scrolling list of Android-style rows. Recording holds what applies to every
+    set (file format, software gain, no-signal delay, confirm before saving). Mixer, titled with
+    the connected device, holds what depends on it (sample rate, mixer recording level, include
+    mixer mic, input channels, mixer profile, advanced USB format); rows a mixer cannot use, or
+    that need one connected, stay in place greyed out with the reason. During a set, Display and
+    About follow.
+  - Every option now lives in Settings. The recorder's setup sheet is gone and its sliders button
+    opens Settings.
+  - The recorder has an input card (name, format and profile, rescan), a signal panel with the time
+    of day, a REC indicator, the elapsed time and a Battery saver button, then the waveform, the
+    meters and the transport (Record set; Pause or Resume and Stop & save; markers).
+  - The waveform is now rekordbox-style three-band layers (blue lows, orange mids, cream highs)
+    instead of an RGB blend. The meters have 48 segments, a clip light and a -60/-40/-20/-9/0
+    scale; their ballistics are unchanged.
+  - The drawer and top bar are restyled, and "My Recordings" is now "Library".
+  - The "Set up your phone for a long set" checklist is replaced by the During a set rows, which show
+    the Do Not Disturb and battery states directly. Its shortcut to Android's system Battery Saver,
+    the "Save everything & close" button and the track marker help text are gone from Settings.
+- Fix lost USB packets (heard as ticks) caused by the phone's power management. Measured on a
+  Sony XQ-EC72 with a DDJ-FLX10: 0.96 lost packets a second with the screen on and 6.1 a second on
+  the battery saver screen, all bus-level errors with the capture thread never late, so the SoC's
+  deep idle states were the cause. While raw USB capture runs the app now holds a silent
+  low-latency stream on the built-in speaker, which makes the audio HAL veto those states, as it
+  does for AAudio recorders. Confirmed on the same setup: 219 s of capture, 2:47 of it on the
+  battery saver screen, zero lost packets; switching the guard off in an earlier run brought them
+  back at 3.7 a second. The stream is pinned to the speaker and is never fed unless Android
+  confirms that route, so it cannot touch the mixer. Always on; the diagnostic report shows its
+  state under "USB idle guard".
+- Remove automatic diagnostics. The app no longer sends anything to Firebase Analytics or
+  Crashlytics, and the Settings > Privacy "Send diagnostics" toggle is gone. The Firebase SDK,
+  Gradle plugins and release-workflow steps are removed. Diagnostic data leaves the phone only
+  when you export it from Diagnostics > Create and share report. USB connection stages and
+  recording state changes are logged to logcat instead, so the exported report still has them.
 - Remove dead code found in the architecture review: two unused composables
   (`TransportControls`, `DeviceStatusCard`), the unused path-based native recording entry point,
   an unused enum and eight unused strings, unused constants, an intent extra nothing sent, and a
@@ -32,17 +75,15 @@
   mixer. Release builds and real phones never see it. `scripts/run-dev.ps1` builds, starts the
   emulator, installs and launches in one command.
 - Add a battery saver screen for long sets. While recording with Set Recorder in front, the
-  screen no longer sleeps, and after 30 seconds without a touch it drops to a black screen showing
-  a red recording dot with the elapsed time (`mm:ss`, `h:mm:ss` past an hour), the time of day in
-  the phone's own format, and a faint "Battery saver mode" label. While it shows, the app does
+  screen no longer sleeps, and after 30 seconds without a touch, or at once from the recorder's
+  Battery saver button, it drops to a black screen: the time of day and a REC dot above the elapsed
+  time (`hh:mm:ss`), and a faint "Battery saver mode" label. The dot blinks twice a second; while
+  paused it stays grey and PAUSED shows under the timer. While the screen shows, the app does
   everything Android lets an app do to save power: brightness down to 2% for its own window, the
-  display's slowest refresh rate, system bars hidden, one redraw a second, and the service stops
-  meter and waveform work. The block moves slightly every minute to avoid burn-in. Any tap returns
-  to the live screen. On by default; toggle under Settings > During a set.
-- Move "Set up your phone for a long set" from the recorder screen to the top of Settings > During
-  a set, where it stays (showing "set up" once nothing is left) instead of hiding. It now also
-  offers a shortcut to Android's system Battery Saver when that is off (an app cannot switch it on
-  itself), and no longer asks to keep the screen awake when the battery saver screen already does.
+  display's slowest refresh rate, system bars hidden, one redraw every half second and nothing in
+  between, and the service stops meter and waveform work. The block moves slightly every minute to
+  avoid burn-in. Any tap returns to the live screen. The automatic dimming is on by default; toggle
+  it under Settings > During a set. The Battery saver button works either way.
 - Fix the clicks and ticks in DDJ-FLX10 recordings. The FLX10 inserts one extra USB packet of pure
   digital zero into the capture stream every ~0.12 s, which punches a 6-frame hole to silence into
   the waveform, 8 or so per second through a loud track. Measured against the source track: the

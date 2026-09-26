@@ -93,7 +93,7 @@ UsbAudioEngine (C++)         meter, waveform, ring buffer, encoder thread, WAV/F
 | 7 | Native: vendor control to Kotlin, `AudioSource`/`FrameSink`, RAII, lock split, host tests | |
 | 8 | Split `UsbAudioManager`; per-screen state, theme tokens, settings as data | |
 | 9 | SDK 36, Variant API, dependency and toolchain bumps | |
-| 10 | UI revamp (fonts, colours, settings design); planned separately | |
+| 10 | UI revamp (fonts, colours, settings design) | settings, recorder, battery saver done (v0.48.0); library and diagnostics still on the old look, and no bundled fonts yet |
 
 ## Testing
 
