@@ -1,8 +1,6 @@
 package com.audiopro.djmrec
 
 import android.app.Application
-import com.audiopro.djmrec.diagnostics.RemoteDiagnostics
-import kotlinx.coroutines.*
 import com.audiopro.djmrec.storage.RecordingOutputManager
 import com.audiopro.djmrec.usb.UsbAudioManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,20 +25,10 @@ class DjmRecApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        RemoteDiagnostics.start(this)
         val recovery = RecordingOutputManager.recoverInterrupted(this)
         if (recovery.hasWork) _recoveryNotice.value = recovery.message
         usbAudioManager = UsbAudioManager(this)
         usbAudioManager.start()
-        val diagnosticsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        diagnosticsScope.launch { usbAudioManager.deviceState.collect { RemoteDiagnostics.device(it) } }
-        diagnosticsScope.launch { usbAudioManager.connectionNotice.collect { notice ->
-            notice?.let { RemoteDiagnostics.event("UsbConnection", it) }
-        } }
-        diagnosticsScope.launch { sessionEvents.lastSaved.collect { saved ->
-            saved?.let { RemoteDiagnostics.event("RecordingSaved", "Published successfully; duration_ms=${it.durationMillis}") }
-        } }
-        if (recovery.hasWork) RemoteDiagnostics.event("Recovery", recovery.message)
     }
 
     fun dismissRecoveryNotice() {

@@ -5,8 +5,7 @@ name: Release Android app
 #    Release with the signed release APK, the debug APK and their checksums;
 #  * "Run workflow" (workflow_dispatch) from any branch -> builds and verifies the same signed
 #    release APK and attaches it as a workflow artifact only (no tag, no GitHub Release).
-# Signing secrets are always required. Firebase (GOOGLE_SERVICES_JSON_BASE64) is optional: when it
-# is absent the release APK compiles with telemetry disabled.
+# Signing secrets are always required.
 on:
   push:
     tags:
@@ -92,20 +91,6 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
 
-      - name: Configure Firebase (optional)
-        id: firebase
-        env:
-          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
-        shell: bash
-        run: |
-          if test -n "$GOOGLE_SERVICES_JSON_BASE64"; then
-            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "GOOGLE_SERVICES_JSON_BASE64 is not configured; building the release APK with Firebase telemetry disabled."
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Prepare Gradle wrapper
         run: chmod +x gradlew
 
@@ -114,10 +99,6 @@ jobs:
 
       - name: Verify and build
         run: ./gradlew lintDebug testDebugUnitTest assembleRelease assembleDebug --console=plain
-
-      - name: Upload Crashlytics symbols
-        if: steps.firebase.outputs.configured == 'true'
-        run: ./gradlew uploadCrashlyticsSymbolFileRelease --console=plain
 
       - name: Verify APKs and create checksums
         shell: bash

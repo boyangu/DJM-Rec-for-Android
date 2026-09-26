@@ -34,28 +34,22 @@ for the one-time SDK setup). The structure of the code and the refactor in progr
 
 ## Mixer diagnostics
 
-In Firebase Crashlytics, use custom keys `mixer.name`, `mixer.profile`, `mixer.connection`,
-`mixer.usb_id` and `mixer.connected`. `mixer.name` is a known profile name such as `DJM-A9`,
-`Unknown` for an unprofiled USB audio device, or `None` without a mixer. Bounded custom logs use
-`MixerConnection`, `MixerCapabilities`, `Mixer`, `UsbDescriptors` and `CaptureHealth` prefixes.
-Connection ID links detection, permission, profile selection and failures.
+The app has no telemetry. Mixer evidence comes from the report users export themselves
+(**Diagnostics > Create and share report**, built by `LogExporter`): USB enumeration, raw
+descriptors and parsed topology, capture settings, transfer stats, the native pipeline snapshot and
+this process's logcat. `UsbAudioManager` logs each connection stage (attach, permission,
+inspection, failures) to logcat under the `UsbAudioManager` tag, so they appear in the report.
 
-Example format (illustrative values, not a hardware certification):
+Native snapshot lines look like this (illustrative values, not a hardware certification):
 
 ```text
-connection=8f21ab90; stage=onDeviceAttached; source=UsbAudioManager.onDeviceAttached
-Detected: DJM-A9; USB=2B73:003C; profile=DJM-A9
-Selected total channels=12; PCM=24bit/3bytes; available rates=48.0 kHz, 96.0 kHz
 sample_rate=requested:48000 opened:48000
 channel_offset=requested:8 resolved:8
 USB1=-120.0dBFS(below threshold) ... USB9=-6.0dBFS(active) USB10=-8.2dBFS(active)
 ```
 
 Raw USB channel activity uses approximate one-second peak windows, before gain and stereo
-extraction. `CaptureHealth` sends a snapshot on connection/health changes and one settled snapshot
-after five seconds. Healthy sessions then stay quiet; payload summaries log only the first
-window and first signal. Measurements continue without repeated uploads. Check
-window age for stale data after a stall. Active means at least -60 dBFS; quieter audio may
+extraction. Check window age for stale data after a stall. Active means at least -60 dBFS; quieter audio may
 still exist, and activity alone does not prove correct master routing. Android-managed input
 provides its opened stream's stereo meters, not otherwise inaccessible mixer channels.
 
@@ -83,10 +77,6 @@ or `scripts/host-tests.sh`, which does the same and falls back to plain g++ when
 When touching a mixer profile, cross-check the wire format and route option codes against the
 Linux kernel's `sound/usb/quirks-table.h` and `sound/usb/mixer_quirks.c` (snd_djm_* tables) and
 cite the entry in the profile comment.
-
-Production builds require an untracked `app/google-services.json`. For GitHub releases, store its
-base64-encoded contents in the `GOOGLE_SERVICES_JSON_BASE64` repository secret. The release workflow
-reconstructs the file only on the runner and uploads native symbols to Firebase Crashlytics.
 
 ## License
 

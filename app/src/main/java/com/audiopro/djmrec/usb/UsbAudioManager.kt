@@ -71,8 +71,8 @@ class UsbAudioManager(private val context: Context) {
     private val diagnosticDevices = mutableSetOf<String>()
 
     private fun trace(device: UsbDevice, stage: String, detail: String = "") =
-        com.audiopro.djmrec.diagnostics.RemoteDiagnostics.usbEvent(device.deviceName,
-            device.productName ?: "Unknown USB device", device.vendorId, device.productId, stage, detail)
+        Log.i(TAG, "${device.deviceName} [%04x:%04x %s] %s: %s".format(
+            device.vendorId, device.productId, device.productName ?: "Unknown USB device", stage, detail))
 
     fun refreshInputs() {
         val connected = usbManager.deviceList.values
@@ -134,7 +134,6 @@ class UsbAudioManager(private val context: Context) {
 
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = getIntentDevice(intent) ?: return
-                    com.audiopro.djmrec.diagnostics.RemoteDiagnostics.usbDetached(device.deviceName)
                     if (_deviceState.value?.deviceName == device.deviceName) {
                         Log.i(TAG, "Mixer detached: ${device.deviceName}")
                         _deviceState.value = null
@@ -317,7 +316,6 @@ class UsbAudioManager(private val context: Context) {
         if (override.isActive) Log.i(TAG, "${device.deviceName}: capture override active: $override")
         val bestInterface = try {
             rawDescriptors = connection.rawDescriptors ?: ByteArray(0)
-            com.audiopro.djmrec.diagnostics.RemoteDiagnostics.descriptors(device.vendorId, device.productId, rawDescriptors, device.deviceName)
             Log.i(TAG, "${device.deviceName}: read ${rawDescriptors.size} bytes of raw descriptors")
             streamingInterfaces = UsbAudioDescriptorParser.findAudioStreamingInterfaces(rawDescriptors)
             topology = UsbAudioDescriptorParser.parseTopology(rawDescriptors)
@@ -443,7 +441,7 @@ class UsbAudioManager(private val context: Context) {
         }
 
         if (bestInterface == null) {
-            trace(device, "inspectAndPublish", "FAILED: no supported capture format; configuration logged under MixerCapabilities and UsbDescriptors")
+            trace(device, "inspectAndPublish", "FAILED: no supported capture format; descriptors are in the exported diagnostic report")
             Log.w(TAG, "${device.deviceName} exposes no usable isochronous IN audio streaming interface")
             _deviceState.value = null
             _connectionNotice.value = AllInOneProfile.find(device.vendorId, device.productId)?.takeIf { it == AllInOneProfile.XDJ_RX3 }?.setupHint

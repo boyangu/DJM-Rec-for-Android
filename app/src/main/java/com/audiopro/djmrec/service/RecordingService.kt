@@ -242,7 +242,6 @@ class RecordingService : LifecycleService() {
                 )
             )
             _health.value = verdict.health
-            com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health("${verdict.health.level}: ${verdict.health.message}")
 
             if (recording) {
                 checkpointIfDue()
@@ -256,9 +255,7 @@ class RecordingService : LifecycleService() {
         super.onCreate()
         lifecycleScope.launch {
             _state.collect { state ->
-                com.audiopro.djmrec.diagnostics.RemoteDiagnostics.event("RecordingState", state.toString())
-                if (state is RecordingState.Error)
-                    com.audiopro.djmrec.diagnostics.RemoteDiagnostics.issue("Recording failure", state.toString())
+                Log.i(TAG, "Recording state: $state")
                 // Driven from the state itself rather than from the individual start/stop paths:
                 // recording can end through a normal save, an error, a USB unplug or the service
                 // being destroyed, and the phone must come off Do Not Disturb in every one of
@@ -466,9 +463,6 @@ class RecordingService : LifecycleService() {
         }
         if (negotiatedRate <= 0) {
             if (params.isUsbIso) {
-                com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health(
-                    "ERROR: Failed to open USB isochronous capture", AudioEngine.getDiagnosticSummary()
-                )
                 failPreparation("Failed to open USB isochronous capture")
                 releaseIsoConnectionIfNeeded()
             } else {

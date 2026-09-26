@@ -83,28 +83,17 @@ Pro DJ Link and USB protocol research are available only on the
 [`experimental` branch](https://github.com/P2GR/DJM-Rec-for-Android/tree/experimental),
 which builds a separate app. They are not included in main releases.
 
-Automatic Firebase diagnostics help improve mixer compatibility. Enabled by default in production
-builds, Google Analytics receives bounded events for mixer connections, USB configuration, channel
-selection, recording state and capture health. Crashlytics continues to receive non-fatal errors and
-crash reports. Recorded audio, filenames, authentication data, USB serial numbers and advertising
-IDs are not collected.
-
-Disable **Automatic diagnostics** in Settings to stop collection. Please identify your mixer,
-Android version, cable/port and what happened when reporting a problem.
-
-Production telemetry is available in Firebase under **Analytics > Events**. The main events are
-`mixer_connected`, `mixer_disconnected`, `usb_connection`, `capture_health`, `recording_state`,
-`recording_saved` and `diagnostic_issue`. Register frequently used parameters such as `mixer_name`,
-`profile`, `usb_product`, `health_level`, `connection_id` and `resolved_pair` as event-scoped custom
-dimensions; register numeric fields such as `opened_rate`, `nonzero_bytes` and `packets_missed` as
-custom metrics when needed. For raw event rows and longer-term queries, enable the Google Analytics
-BigQuery export from **Firebase project settings > Integrations**.
+The app sends no telemetry. Nothing about your device, mixer or recordings leaves the phone
+unless you export it yourself: **Diagnostics > Create and share report** builds a text report
+(app logs, USB descriptors, capture statistics and current settings, never audio) and opens the
+system share sheet so you choose where it goes. Please attach it, and identify your mixer, Android
+version, cable/port and what happened, when reporting a problem.
 
 Models without a readable route register (DJM-450, DJM-V10, DJM-S11) get the *selected* MIX/REC
 OUT pair written once after the USB interface and sample rate are initialized, with silent
 playback traffic keeping the duplex stream active (8 channels on the 450, 12 on the V10). AUTO uses
 the model's default pair (USB 1/2 on the 450 and V10; USB 5/6 on the S11); a manual pair configures
-its own MIX route. The `capture_setup` event reports `rate_set_result` (3 means accepted),
+its own MIX route. The report's `capture_setup` line shows `rate_set_result` (3 means accepted),
 `route_value` (for example 266/522/778 for USB 1/2, 3/4, 5/6) and `route_set_result` (0 means
 accepted). Negative results are USB errors; -999 means not attempted. An accepted route write is
 not readback verification. `capture_health` confirms whether audio actually arrives. The vendor
