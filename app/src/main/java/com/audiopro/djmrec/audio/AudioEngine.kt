@@ -1,5 +1,7 @@
 package com.audiopro.djmrec.audio
 
+import com.audiopro.djmrec.domain.CaptureSource
+
 /**
  * Thin Kotlin/JNI boundary over the native `UsbAudioEngine`. The engine owns exactly one
  * AAudio exclusive stream + one ring buffer + one encoder at a time, so this wrapper is a
@@ -43,29 +45,38 @@ object AudioEngine {
      * Mixers like the Pioneer DJM-A9 expose a combined 12-channel interface. This path can
      * select any stereo pair and, for the DJM-A9, routes MIX (REC OUT) to that pair first.
      *
-     * @param fd an *open* `UsbDeviceConnection.getFileDescriptor()` -- the connection must be
-     *   kept open (not `.close()`'d) for the entire capture session; see
-     *   `UsbAudioManager.openIsoCaptureHandle()`.
-     * @param interfaceNumber the AudioStreaming interface number (not AudioControl).
-     * @param alternateSetting the alt setting whose isochronous endpoint carries audio (UAC2
-     *   devices idle on alt setting 0, which has no endpoint / zero bandwidth).
-     * @param endpointAddress the isochronous IN endpoint address (e.g. `0x81`).
-     * @param maxPacketSize `wMaxPacketSize` from that endpoint's descriptor.
-     * @param totalChannels total interleaved channel count in the *wire* format (e.g. 12).
-     * @param subframeSize bytes per sample container on the wire (1/2/3/4).
-     * @param bitResolution significant bits per sample within that container (e.g. 24).
-     * @param extractChannelOffset 0-indexed first channel of the stereo pair to pull out.
+     * The connection behind [CaptureSource.UsbIso.fd] must stay open (not `.close()`'d) for the
+     * entire capture session; see `UsbAudioManager.openIsoCaptureHandle()`.
+     *
      * @param sampleRateHint the rate Kotlin chose; the source then measures the endpoint's real
      *   packet cadence and that measurement wins.
-     * @param includeMicInMix route REC OUT *with* the mic bus (vendor source 0x0a) instead of
-     *   "REC OUT without mic" (0x0e) on Pioneer models that offer both.
-     * @param playbackOverride -1 follow the profile, 0 force the silent OUT keepalive off, 1 on.
-     * @param endpointRateOverride -1 follow the profile, 0/1 force the UAC1 SET_CUR rate command.
-     * @param allowFormatMismatch true when the wire format was entered manually (profile table
-     *   mismatches are logged, not fatal).
      * @return the measured sample rate on success, or -1 on failure.
      */
-    external fun openUsbIso(
+    fun openUsbIso(source: CaptureSource.UsbIso, sampleRateHint: Int): Int = nativeOpenUsbIso(
+        source.fd,
+        source.interfaceNumber,
+        source.alternateSetting,
+        source.endpointAddress,
+        source.maxPacketSize,
+        source.totalChannels,
+        source.subframeSize,
+        source.bitResolution,
+        source.channelOffset,
+        source.clock?.interfaceNumber ?: -1,
+        source.clock?.sourceId ?: -1,
+        source.clock?.supportsFrequencySet == true,
+        source.vendorId,
+        source.productId,
+        source.rawDescriptors,
+        sampleRateHint,
+        source.includeMic,
+        source.playbackOverride.nativeValue,
+        source.endpointRateOverride.nativeValue,
+        source.allowFormatMismatch
+    )
+
+    /** Positional JNI form of [openUsbIso]; the order must match `AudioEngineJNI.cpp`. */
+    private external fun nativeOpenUsbIso(
         fd: Int,
         interfaceNumber: Int,
         alternateSetting: Int,
@@ -78,8 +89,6 @@ object AudioEngine {
         clockControlInterfaceNumber: Int,
         clockSourceId: Int,
         clockSupportsFrequencySet: Boolean,
-        feedbackEndpointAddress: Int,
-        feedbackMaxPacketSize: Int,
         vendorId: Int,
         productId: Int,
         rawDescriptors: ByteArray,

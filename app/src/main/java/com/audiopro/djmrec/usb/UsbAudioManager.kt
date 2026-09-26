@@ -14,6 +14,9 @@ import android.media.AudioManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
+import com.audiopro.djmrec.domain.CaptureSource
+import com.audiopro.djmrec.domain.ClockControl
+import com.audiopro.djmrec.domain.Tristate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,7 +44,7 @@ class UsbAudioManager(private val context: Context) {
          */
         val PIONEER_VENDOR_IDS = setOf(PioneerMixerProfile.ALPHATHETA_VENDOR_ID)
 
-        const val AUTO_CHANNEL_OFFSET = -1
+        const val AUTO_CHANNEL_OFFSET = CaptureSource.UsbIso.AUTO_CHANNEL_OFFSET
         private fun isPioneerDevice(device: UsbDevice) = device.vendorId in PIONEER_VENDOR_IDS
 
         /**
@@ -707,7 +710,7 @@ class UsbAudioManager(private val context: Context) {
         selectedChannelOffset: Int = AUTO_CHANNEL_OFFSET,
         includeMic: Boolean = true,
         captureLevelStep: Int = -1
-    ): UsbIsoCaptureHandle? {
+    ): CaptureSource.UsbIso? {
         val info = _deviceState.value ?: run {
             Log.w(TAG, "openIsoCaptureHandle: no device currently published")
             return null
@@ -760,7 +763,7 @@ class UsbAudioManager(private val context: Context) {
                 "settable=${clock?.supportsFrequencySet}"
         )
 
-        return UsbIsoCaptureHandle(
+        return CaptureSource.UsbIso(
             fd = connection.fileDescriptor,
             interfaceNumber = info.streamingInterfaceNumber,
             alternateSetting = info.activeAlternateSetting,
@@ -769,24 +772,14 @@ class UsbAudioManager(private val context: Context) {
             totalChannels = info.channelCount,
             subframeSize = info.subframeSize,
             bitResolution = info.bitResolution,
-            rawDescriptors = info.rawDescriptors,
-            clockControlInterfaceNumber = clock?.interfaceNumber ?: -1,
-            clockSourceId = clock?.id ?: -1,
-            clockSupportsFrequencySet = clock?.supportsFrequencySet == true,
-            feedbackEndpointAddress = info.streamingInterfaceNumber.let { interfaceNumber ->
-                info.topology?.audioStreamingInterfaces
-                    ?.firstOrNull { it.interfaceNumber == interfaceNumber && it.alternateSetting == info.activeAlternateSetting }
-                    ?.isochronousFeedbackEndpointAddress ?: -1
-            },
-            feedbackMaxPacketSize = info.streamingInterfaceNumber.let { interfaceNumber ->
-                info.topology?.audioStreamingInterfaces
-                    ?.firstOrNull { it.interfaceNumber == interfaceNumber && it.alternateSetting == info.activeAlternateSetting }
-                    ?.isochronousFeedbackMaxPacketSize ?: -1
-            },
+            channelOffset = selectedChannelOffset,
+            includeMic = includeMic,
+            clock = clock?.let { ClockControl(it.interfaceNumber, it.id, it.supportsFrequencySet) },
             vendorId = info.nativeVendorId,
             productId = info.nativeProductId,
-            playbackOverride = info.captureOverride.playbackKeepalive,
-            endpointRateOverride = info.captureOverride.endpointRateCommand,
+            rawDescriptors = info.rawDescriptors,
+            playbackOverride = Tristate.fromNative(info.captureOverride.playbackKeepalive),
+            endpointRateOverride = Tristate.fromNative(info.captureOverride.endpointRateCommand),
             allowFormatMismatch = info.captureOverride.hasFormat || info.captureOverride.hasEndpoint
         )
     }

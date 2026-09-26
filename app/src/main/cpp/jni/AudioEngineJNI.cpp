@@ -38,12 +38,12 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openDemo(
 }
 
 JNIEXPORT jint JNICALL
-Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
+Java_com_audiopro_djmrec_audio_AudioEngine_nativeOpenUsbIso(
     JNIEnv* env, jobject /*thiz*/,
     jint fd, jint interfaceNumber, jint alternateSetting, jint endpointAddress, jint maxPacketSize,
     jint totalChannels, jint subframeSize, jint bitResolution, jint extractChannelOffset,
     jint clockControlInterfaceNumber, jint clockSourceId, jboolean clockSupportsFrequencySet,
-    jint feedbackEndpointAddress, jint feedbackMaxPacketSize, jint vendorId, jint productId,
+    jint vendorId, jint productId,
     jbyteArray rawDescriptors,
     jint sampleRateHint, jboolean includeMicInMix,
     jint playbackOverride, jint endpointRateOverride, jboolean allowFormatMismatch) {
@@ -61,8 +61,6 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
     config.clockSourceId = clockSourceId;
     config.clockSupportsFrequencySet = clockSupportsFrequencySet == JNI_TRUE;
     config.requestedSampleRate = sampleRateHint;
-    config.feedbackEndpointAddress = feedbackEndpointAddress;
-    config.feedbackMaxPacketSize = feedbackMaxPacketSize;
     config.vendorId = vendorId;
     config.productId = productId;
     config.includeMicInMix = includeMicInMix == JNI_TRUE;
@@ -80,7 +78,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_openUsbIso(
             env->ReleaseByteArrayElements(rawDescriptors, const_cast<jbyte*>(bytes), JNI_ABORT);
         }
     }
-    return UsbAudioEngine::instance().openUsbIso(config, sampleRateHint);
+    return UsbAudioEngine::instance().openUsbIso(config);
 }
 
 JNIEXPORT jboolean JNICALL

@@ -156,7 +156,7 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
     return mFormat.sampleRate;
 }
 
-int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32_t sampleRateHint) {
+int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig) {
     std::lock_guard<std::mutex> lock(mControlMutex);
     mLastUsbSetupFailure.clear();
     mSinkReady.store(false, std::memory_order_release);

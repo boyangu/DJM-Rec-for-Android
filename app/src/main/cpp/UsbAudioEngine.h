@@ -53,9 +53,10 @@ public:
      * Opens the raw libusb isochronous capture path instead of AAudio, extracting a stereo
      * pair out of a wider multichannel USB Audio interface. The source briefly measures actual frame cadence
      * before returning, which covers UAC2 devices that do not answer clock-frequency queries.
-     * Returns the measured sample rate on success, or -1 on failure.
+     * Returns the measured sample rate on success, or -1 on failure. The rate Kotlin asked for
+     * is isoConfig.requestedSampleRate.
      */
-    int openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32_t sampleRateHint);
+    int openUsbIso(const UsbIsoAudioSource::Config& isoConfig);
 
     /**
      * Debug-only demo mixer: feeds a synthetic music-like signal (DemoSignalGenerator) through

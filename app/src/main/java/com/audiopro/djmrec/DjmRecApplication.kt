@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class DjmRecApplication : Application() {
     val sessionEvents = com.audiopro.djmrec.audio.SessionEvents()
+    val captureSessionHandoff = com.audiopro.djmrec.service.CaptureSessionHandoff()
 
     lateinit var usbAudioManager: UsbAudioManager
         private set

@@ -621,10 +621,6 @@ std::string UsbIsoAudioSource::start(const Config& config, FrameCallback callbac
     if (!config.rawDescriptors.empty()) {
         LOGI("Received %zu raw USB descriptor bytes for native session", config.rawDescriptors.size());
     }
-    if (config.feedbackEndpointAddress >= 0) {
-        LOGI("Detected isochronous feedback endpoint 0x%02x maxPacketSize=%d; capture endpoint is adaptive",
-             config.feedbackEndpointAddress, config.feedbackMaxPacketSize);
-    }
 
     mTransfers.reserve(kNumTransfers);
     for (int i = 0; i < kNumTransfers; ++i) {
@@ -989,8 +985,6 @@ std::string UsbIsoAudioSource::diagnosticSummary() const {
         << "clock=control_if:" << mConfig.clockControlInterfaceNumber
         << " source:" << mConfig.clockSourceId
         << " settable:" << (mConfig.clockSupportsFrequencySet ? "true" : "false") << '\n'
-        << "feedback=ep:" << mConfig.feedbackEndpointAddress
-        << " max_packet:" << mConfig.feedbackMaxPacketSize << '\n'
         << "playback_keepalive=required:" << (mPlaybackEnabled ? "true" : "false")
         << " override:" << mConfig.playbackOverride
         << " endpoint_rate_command:" << (mUseEndpointSampleRate ? "true" : "false")

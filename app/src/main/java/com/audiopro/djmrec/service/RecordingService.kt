@@ -37,6 +37,8 @@ import com.audiopro.djmrec.audio.RecordingHealthLevel
 import com.audiopro.djmrec.audio.RecordingState
 import com.audiopro.djmrec.audio.SignalDetector
 import com.audiopro.djmrec.audio.StereoLevels
+import com.audiopro.djmrec.domain.CaptureSessionParams
+import com.audiopro.djmrec.domain.CaptureSource
 import com.audiopro.djmrec.storage.PendingRecordingOutput
 import com.audiopro.djmrec.storage.RecordingOutputManager
 import com.audiopro.djmrec.storage.RecordingSessionStore
@@ -66,42 +68,10 @@ class RecordingService : LifecycleService() {
         const val ACTION_MARK_TRACK = "com.audiopro.djmrec.action.MARK_TRACK"
         const val ACTION_STOP = "com.audiopro.djmrec.action.STOP"
 
-        const val EXTRA_DEVICE_ID = "extra_device_id"
-        const val EXTRA_SAMPLE_RATE = "extra_sample_rate"
-        const val EXTRA_BIT_DEPTH = "extra_bit_depth"
-        const val EXTRA_CHANNEL_COUNT = "extra_channel_count"
+        /** Id of a [CaptureSessionParams] offered to [CaptureSessionHandoff]; START and MONITOR only. */
+        const val EXTRA_SESSION_ID = "extra_session_id"
         const val EXTRA_FORMAT = "extra_format"
-
-        /** [EXTRA_CAPTURE_MODE] value: standard AAudio/AudioRecord path via [EXTRA_DEVICE_ID]. */
-        const val CAPTURE_MODE_AAUDIO = 0
-        /** [EXTRA_CAPTURE_MODE] value: raw libusb isochronous path via the EXTRA_USB_* extras. */
-        const val CAPTURE_MODE_USB_ISO = 1
-        const val EXTRA_CAPTURE_MODE = "extra_capture_mode"
-
-        // --- Raw USB iso capture params (only used when EXTRA_CAPTURE_MODE == CAPTURE_MODE_USB_ISO) ---
-        /** `UsbDeviceConnection.getFileDescriptor()`; see [UsbAudioManager.openIsoCaptureHandle]. */
-        const val EXTRA_USB_FD = "extra_usb_fd"
-        const val EXTRA_USB_INTERFACE = "extra_usb_interface"
-        const val EXTRA_USB_ALT_SETTING = "extra_usb_alt_setting"
-        const val EXTRA_USB_ENDPOINT = "extra_usb_endpoint"
-        const val EXTRA_USB_MAX_PACKET_SIZE = "extra_usb_max_packet_size"
-        const val EXTRA_USB_TOTAL_CHANNELS = "extra_usb_total_channels"
-        const val EXTRA_USB_SUBFRAME_SIZE = "extra_usb_subframe_size"
-        const val EXTRA_USB_CHANNEL_OFFSET = "extra_usb_channel_offset"
-        /** Route REC OUT with (true) or without (false) the mic bus on models offering both. */
-        const val EXTRA_USB_INCLUDE_MIC = "extra_usb_include_mic"
-        /** Manual overrides: -1 follow profile, 0 off, 1 on; see CaptureOverride. */
-        const val EXTRA_USB_PLAYBACK_OVERRIDE = "extra_usb_playback_override"
-        const val EXTRA_USB_ENDPOINT_RATE_OVERRIDE = "extra_usb_endpoint_rate_override"
-        const val EXTRA_USB_ALLOW_FORMAT_MISMATCH = "extra_usb_allow_format_mismatch"
-        const val EXTRA_USB_CLOCK_CONTROL_INTERFACE = "extra_usb_clock_control_interface"
-        const val EXTRA_USB_CLOCK_SOURCE_ID = "extra_usb_clock_source_id"
-        const val EXTRA_USB_CLOCK_FREQUENCY_SETTABLE = "extra_usb_clock_frequency_settable"
-        const val EXTRA_USB_FEEDBACK_ENDPOINT = "extra_usb_feedback_endpoint"
-        const val EXTRA_USB_FEEDBACK_MAX_PACKET_SIZE = "extra_usb_feedback_max_packet_size"
-        const val EXTRA_USB_VENDOR_ID = "extra_usb_vendor_id"
-        const val EXTRA_USB_PRODUCT_ID = "extra_usb_product_id"
-        const val EXTRA_USB_RAW_DESCRIPTORS = "extra_usb_raw_descriptors"
+        private const val DEFAULT_DEVICE_LABEL = "USB Mixer"
 
         private const val TAG = "RecordingService"
         private const val CHANNEL_ID = "recording_channel"
@@ -178,9 +148,14 @@ class RecordingService : LifecycleService() {
     private var currentSampleRate = 48_000
     private var currentOutputChannels = 2
     private var bytesPerSecond = RecordingStoragePolicy.worstCaseBytesPerSecond(48_000, 2, 24)
-    private var deviceLabel: String = "USB Mixer"
-    /** True when the in-progress session opened via [startUsbIsoSession] rather than [startSession]. */
-    private var isUsbIsoSession = false
+    /**
+     * The session being (or last) captured. Written on the main thread, read by the monitor
+     * thread for the notification and health checks. Kept after the session ends so the release
+     * paths still know it was USB; the next start replaces it.
+     */
+    @Volatile private var session: CaptureSessionParams? = null
+    private val deviceLabel: String get() = session?.deviceLabel ?: DEFAULT_DEVICE_LABEL
+    private val isUsbIsoSession: Boolean get() = session?.isUsbIso == true
     /** True when the audio stream is open for monitoring but no file is being written. */
     private var isMonitoringOnly = false
     @Volatile
@@ -188,8 +163,6 @@ class RecordingService : LifecycleService() {
     @Volatile private var uiVisible = false
     @Volatile private var waveformVisible = false
     private var lastCheckpointRealtime = 0L
-    /** Mic preference of the current USB session, needed if the route fallback fires later. */
-    @Volatile private var currentIncludeMic = true
     private var lastUsbStats = LongArray(7)
     private var usbHealthInitialized = false
     private var stalledUsbChecks = 0
@@ -261,8 +234,9 @@ class RecordingService : LifecycleService() {
 
             // Native asked for the "route every MIX pair" fallback after a silent first window.
             // It must run here (Java UsbDeviceConnection path), never on the libusb event thread.
-            if (isUsbIsoSession && AudioEngine.takeRouteFallbackRequest()) {
-                (application as DjmRecApplication).usbAudioManager.applyRouteFallback(currentIncludeMic)
+            val usbSource = session?.source as? CaptureSource.UsbIso
+            if (usbSource != null && AudioEngine.takeRouteFallbackRequest()) {
+                (application as DjmRecApplication).usbAudioManager.applyRouteFallback(usbSource.includeMic)
             }
 
             val recording = _state.value is RecordingState.Recording || _state.value is RecordingState.Paused
@@ -405,17 +379,22 @@ class RecordingService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        // Taken up front so every early return below can release what it carries.
+        val offered = intent?.getLongExtra(EXTRA_SESSION_ID, CaptureSessionHandoff.NO_ID)
+            ?.takeIf { it != CaptureSessionHandoff.NO_ID }
+            ?.let { (application as DjmRecApplication).captureSessionHandoff.take(it) }
         if (_saving.value && intent?.action != ACTION_STOP_ALL) {
-            discardUnusedIsoHandle(intent)
+            discardUnusedIsoHandle(offered)
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_START || intent?.action == ACTION_MONITOR) {
             if (events.closeRequested.value) {
-                discardUnusedIsoHandle(intent)
+                discardUnusedIsoHandle(offered)
                 return START_NOT_STICKY
             }
+            // Before foreground promotion, which picks the service type from the session.
             if (_state.value is RecordingState.Idle || _state.value is RecordingState.Error) {
-                isUsbIsoSession = intent.getIntExtra(EXTRA_CAPTURE_MODE, CAPTURE_MODE_AAUDIO) == CAPTURE_MODE_USB_ISO
+                session = offered
             }
         }
         when (intent?.action) {
@@ -433,56 +412,25 @@ class RecordingService : LifecycleService() {
                     _state.value is RecordingState.Recording ||
                     _state.value is RecordingState.Paused ||
                     _state.value is RecordingState.Preparing) {
-                    discardUnusedIsoHandle(intent)
+                    discardUnusedIsoHandle(offered)
                     return START_NOT_STICKY
                 }
                 pendingRecordingFormat = null
                 _state.value = RecordingState.Preparing
                 // Promote before native USB open/rate probing can block.
                 if (!startForegroundNotification()) {
+                    discardUnusedIsoHandle(offered)
                     _state.value = RecordingState.Error("Android blocked the recording service -- open the app and try again")
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                val sampleRate = intent.getIntExtra(EXTRA_SAMPLE_RATE, 48000)
-                val bitDepth = intent.getIntExtra(EXTRA_BIT_DEPTH, 24)
-                val captureMode = intent.getIntExtra(EXTRA_CAPTURE_MODE, CAPTURE_MODE_AAUDIO)
-                if (captureMode == CAPTURE_MODE_USB_ISO) {
-                    startUsbIsoSession(
-                        fd = intent.getIntExtra(EXTRA_USB_FD, -1),
-                        interfaceNumber = intent.getIntExtra(EXTRA_USB_INTERFACE, -1),
-                        alternateSetting = intent.getIntExtra(EXTRA_USB_ALT_SETTING, -1),
-                        endpointAddress = intent.getIntExtra(EXTRA_USB_ENDPOINT, -1),
-                        maxPacketSize = intent.getIntExtra(EXTRA_USB_MAX_PACKET_SIZE, -1),
-                        totalChannels = intent.getIntExtra(EXTRA_USB_TOTAL_CHANNELS, 2),
-                        subframeSize = intent.getIntExtra(EXTRA_USB_SUBFRAME_SIZE, 4),
-                        clockControlInterfaceNumber = intent.getIntExtra(EXTRA_USB_CLOCK_CONTROL_INTERFACE, -1),
-                        clockSourceId = intent.getIntExtra(EXTRA_USB_CLOCK_SOURCE_ID, -1),
-                        clockSupportsFrequencySet = intent.getBooleanExtra(EXTRA_USB_CLOCK_FREQUENCY_SETTABLE, false),
-                        feedbackEndpointAddress = intent.getIntExtra(EXTRA_USB_FEEDBACK_ENDPOINT, -1),
-                        feedbackMaxPacketSize = intent.getIntExtra(EXTRA_USB_FEEDBACK_MAX_PACKET_SIZE, -1),
-                        vendorId = intent.getIntExtra(EXTRA_USB_VENDOR_ID, -1),
-                        productId = intent.getIntExtra(EXTRA_USB_PRODUCT_ID, -1),
-                        rawDescriptors = intent.getByteArrayExtra(EXTRA_USB_RAW_DESCRIPTORS) ?: byteArrayOf(),
-                        bitDepth = bitDepth,
-                        channelOffset = intent.getIntExtra(EXTRA_USB_CHANNEL_OFFSET, 0),
-                        sampleRateHint = sampleRate,
-                        includeMic = intent.getBooleanExtra(EXTRA_USB_INCLUDE_MIC, true),
-                        playbackOverride = intent.getIntExtra(EXTRA_USB_PLAYBACK_OVERRIDE, -1),
-                        endpointRateOverride = intent.getIntExtra(EXTRA_USB_ENDPOINT_RATE_OVERRIDE, -1),
-                        allowFormatMismatch = intent.getBooleanExtra(EXTRA_USB_ALLOW_FORMAT_MISMATCH, false),
-                        monitorOnly = true
-                    )
-                } else {
-                    val deviceId = intent.getIntExtra(EXTRA_DEVICE_ID, -1)
-                    val channelCount = intent.getIntExtra(EXTRA_CHANNEL_COUNT, 2)
-                    startSession(deviceId, sampleRate, channelCount, bitDepth, monitorOnly = true)
-                }
+                startCapture(offered, currentFormat, monitorOnly = true)
             }
 
             ACTION_START -> {
                 // If already monitoring, just begin encoding.
                 if (_state.value is RecordingState.Monitoring) {
+                    discardUnusedIsoHandle(offered)
                     currentFormat = recordingFormatFrom(intent)
                     beginRecordingNow()
                     return START_NOT_STICKY
@@ -491,58 +439,23 @@ class RecordingService : LifecycleService() {
                 // second UsbDeviceConnection here would invalidate the first raw USB stream.
                 if (_state.value is RecordingState.Preparing) {
                     pendingRecordingFormat = recordingFormatFrom(intent)
-                    discardUnusedIsoHandle(intent)
+                    discardUnusedIsoHandle(offered)
                     return START_NOT_STICKY
                 }
                 if (_state.value is RecordingState.Recording ||
                     _state.value is RecordingState.Paused) {
-                    discardUnusedIsoHandle(intent)
+                    discardUnusedIsoHandle(offered)
                     return START_NOT_STICKY
                 }
                 _state.value = RecordingState.Preparing
                 if (!startForegroundNotification()) {
+                    discardUnusedIsoHandle(offered)
                     _state.value = RecordingState.Error("Android blocked the recording service -- open the app and try again")
                     stopSelf()
                     return START_NOT_STICKY
                 }
                 // Otherwise, open stream + encode immediately (full recording from idle).
-                val sampleRate = intent.getIntExtra(EXTRA_SAMPLE_RATE, 48000)
-                val bitDepth = intent.getIntExtra(EXTRA_BIT_DEPTH, 24)
-                val format = recordingFormatFrom(intent)
-                val captureMode = intent.getIntExtra(EXTRA_CAPTURE_MODE, CAPTURE_MODE_AAUDIO)
-
-                if (captureMode == CAPTURE_MODE_USB_ISO) {
-                    startUsbIsoSession(
-                        fd = intent.getIntExtra(EXTRA_USB_FD, -1),
-                        interfaceNumber = intent.getIntExtra(EXTRA_USB_INTERFACE, -1),
-                        alternateSetting = intent.getIntExtra(EXTRA_USB_ALT_SETTING, -1),
-                        endpointAddress = intent.getIntExtra(EXTRA_USB_ENDPOINT, -1),
-                        maxPacketSize = intent.getIntExtra(EXTRA_USB_MAX_PACKET_SIZE, -1),
-                        totalChannels = intent.getIntExtra(EXTRA_USB_TOTAL_CHANNELS, 2),
-                        subframeSize = intent.getIntExtra(EXTRA_USB_SUBFRAME_SIZE, 4),
-                        clockControlInterfaceNumber = intent.getIntExtra(EXTRA_USB_CLOCK_CONTROL_INTERFACE, -1),
-                        clockSourceId = intent.getIntExtra(EXTRA_USB_CLOCK_SOURCE_ID, -1),
-                        clockSupportsFrequencySet = intent.getBooleanExtra(EXTRA_USB_CLOCK_FREQUENCY_SETTABLE, false),
-                        feedbackEndpointAddress = intent.getIntExtra(EXTRA_USB_FEEDBACK_ENDPOINT, -1),
-                        feedbackMaxPacketSize = intent.getIntExtra(EXTRA_USB_FEEDBACK_MAX_PACKET_SIZE, -1),
-                        vendorId = intent.getIntExtra(EXTRA_USB_VENDOR_ID, -1),
-                        productId = intent.getIntExtra(EXTRA_USB_PRODUCT_ID, -1),
-                        rawDescriptors = intent.getByteArrayExtra(EXTRA_USB_RAW_DESCRIPTORS) ?: byteArrayOf(),
-                        bitDepth = bitDepth,
-                        channelOffset = intent.getIntExtra(EXTRA_USB_CHANNEL_OFFSET, 0),
-                        sampleRateHint = sampleRate,
-                        includeMic = intent.getBooleanExtra(EXTRA_USB_INCLUDE_MIC, true),
-                        playbackOverride = intent.getIntExtra(EXTRA_USB_PLAYBACK_OVERRIDE, -1),
-                        endpointRateOverride = intent.getIntExtra(EXTRA_USB_ENDPOINT_RATE_OVERRIDE, -1),
-                        allowFormatMismatch = intent.getBooleanExtra(EXTRA_USB_ALLOW_FORMAT_MISMATCH, false),
-                        format = format,
-                        monitorOnly = false
-                    )
-                } else {
-                    val deviceId = intent.getIntExtra(EXTRA_DEVICE_ID, -1)
-                    val channelCount = intent.getIntExtra(EXTRA_CHANNEL_COUNT, 2)
-                    startSession(deviceId, sampleRate, channelCount, bitDepth, format, monitorOnly = false)
-                }
+                startCapture(offered, recordingFormatFrom(intent), monitorOnly = false)
             }
 
             ACTION_PAUSE -> pauseSession()
@@ -560,8 +473,8 @@ class RecordingService : LifecycleService() {
      * busy, saving, closing) must release that connection, otherwise it leaks and the next
      * interface claim fails with BUSY. Only safe while no native session holds the fd.
      */
-    private fun discardUnusedIsoHandle(intent: Intent?) {
-        if (intent?.hasExtra(EXTRA_USB_FD) == true && !AudioEngine.isStreamOpen()) {
+    private fun discardUnusedIsoHandle(offered: CaptureSessionParams?) {
+        if (offered?.isUsbIso == true && !AudioEngine.isStreamOpen()) {
             (application as DjmRecApplication).usbAudioManager.releaseIsoCaptureConnection()
         }
     }
@@ -571,103 +484,54 @@ class RecordingService : LifecycleService() {
         return RecordingFormat.entries.firstOrNull { it.nativeValue == value } ?: RecordingFormat.WAV
     }
 
-    fun startSession(
-        audioManagerDeviceId: Int,
-        sampleRateHint: Int,
-        channelCount: Int,
-        bitDepth: Int,
-        format: RecordingFormat = RecordingFormat.WAV,
-        monitorOnly: Boolean = false
-    ) {
+    /**
+     * Opens the source [params] describes, then starts monitoring or encoding. The caller has
+     * already promoted the service to the foreground; null [params] means the start Intent
+     * arrived without a session (nothing was offered, or it was already taken).
+     */
+    private fun startCapture(params: CaptureSessionParams?, format: RecordingFormat, monitorOnly: Boolean) {
         if (_state.value is RecordingState.Recording || _state.value is RecordingState.Monitoring) return
+        if (params == null) {
+            failPreparation("No mixer to open -- reconnect the mixer and try again")
+            return
+        }
         _state.value = RecordingState.Preparing
-        isUsbIsoSession = false
+        session = params
         isMonitoringOnly = monitorOnly
-        currentBitDepth = bitDepth
+        currentBitDepth = params.bitDepth
         currentOutputChannels = 2
 
-        val negotiatedRate =
-            if (com.audiopro.djmrec.usb.DemoMixer.enabled &&
-                audioManagerDeviceId == com.audiopro.djmrec.usb.DemoMixer.AUDIO_DEVICE_ID) {
-                AudioEngine.openDemo(sampleRateHint, bitDepth)
+        params.invalidReason()?.let { reason ->
+            failPreparation(reason)
+            releaseIsoConnectionIfNeeded()
+            return
+        }
+        val negotiatedRate = when (val source = params.source) {
+            is CaptureSource.UsbIso -> AudioEngine.openUsbIso(source, params.sampleRateHint)
+            is CaptureSource.AudioStack ->
+                AudioEngine.open(source.deviceId, params.sampleRateHint, source.channelCount, params.bitDepth)
+            CaptureSource.Demo ->
+                if (com.audiopro.djmrec.usb.DemoMixer.enabled) AudioEngine.openDemo(params.sampleRateHint, params.bitDepth) else -1
+        }
+        if (negotiatedRate <= 0) {
+            if (params.isUsbIso) {
+                com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health(
+                    "ERROR: Failed to open USB isochronous capture", AudioEngine.getDiagnosticSummary()
+                )
+                failPreparation("Failed to open USB isochronous capture")
+                releaseIsoConnectionIfNeeded()
             } else {
-                AudioEngine.open(audioManagerDeviceId, sampleRateHint, channelCount, bitDepth)
+                failPreparation("Failed to open exclusive audio stream")
             }
-        if (negotiatedRate <= 0) {
-            failPreparation("Failed to open exclusive audio stream")
             return
         }
-        updateRecordingFormat(negotiatedRate, bitDepth)
-
-        if (monitorOnly) {
-            beginMonitoring()
-        } else {
-            beginEncodingOrFail(bitDepth, format)
-        }
-    }
-
-    fun startUsbIsoSession(
-        fd: Int,
-        interfaceNumber: Int,
-        alternateSetting: Int,
-        endpointAddress: Int,
-        maxPacketSize: Int,
-        totalChannels: Int,
-        subframeSize: Int,
-        clockControlInterfaceNumber: Int,
-        clockSourceId: Int,
-        clockSupportsFrequencySet: Boolean,
-        feedbackEndpointAddress: Int,
-        feedbackMaxPacketSize: Int,
-        vendorId: Int,
-        productId: Int,
-        rawDescriptors: ByteArray,
-        bitDepth: Int,
-        channelOffset: Int,
-        sampleRateHint: Int,
-        includeMic: Boolean = true,
-        playbackOverride: Int = -1,
-        endpointRateOverride: Int = -1,
-        allowFormatMismatch: Boolean = false,
-        format: RecordingFormat = RecordingFormat.WAV,
-        monitorOnly: Boolean = false
-    ) {
-        if (_state.value is RecordingState.Recording || _state.value is RecordingState.Monitoring) return
-        _state.value = RecordingState.Preparing
-        isUsbIsoSession = true
-        currentIncludeMic = includeMic
-        isMonitoringOnly = monitorOnly
-        currentBitDepth = bitDepth
-        currentOutputChannels = 2
-
-        if (fd < 0 || interfaceNumber < 0 || endpointAddress < 0 || maxPacketSize <= 0) {
-            failPreparation("Invalid USB capture parameters")
-            releaseIsoConnectionIfNeeded()
-            return
-        }
-        val negotiatedRate = AudioEngine.openUsbIso(
-            fd, interfaceNumber, alternateSetting, endpointAddress, maxPacketSize,
-            totalChannels, subframeSize, bitDepth, channelOffset,
-            clockControlInterfaceNumber, clockSourceId, clockSupportsFrequencySet,
-            feedbackEndpointAddress, feedbackMaxPacketSize, vendorId, productId,
-            rawDescriptors, sampleRateHint, includeMic,
-            playbackOverride, endpointRateOverride, allowFormatMismatch
-        )
-        if (negotiatedRate <= 0) {
-            com.audiopro.djmrec.diagnostics.RemoteDiagnostics.health(
-                "ERROR: Failed to open USB isochronous capture", AudioEngine.getDiagnosticSummary()
-            )
-            failPreparation("Failed to open USB isochronous capture")
-            releaseIsoConnectionIfNeeded()
-            return
-        }
-        updateRecordingFormat(negotiatedRate, bitDepth)
+        updateRecordingFormat(negotiatedRate, params.bitDepth)
 
         if (monitorOnly) {
             beginMonitoring()
         } else {
             // Recording a quiet intro is valid. Monitoring/health report silence separately.
-            beginEncodingOrFail(bitDepth, format)
+            beginEncodingOrFail(params.bitDepth, format)
         }
     }
 
@@ -705,7 +569,7 @@ class RecordingService : LifecycleService() {
         startPolling()
     }
 
-    /** Shared tail of both [startSession] and [startUsbIsoSession] once the native capture
+    /** Shared tail of [startCapture] and [beginRecordingNow] once the native capture
      *  source is open: creates the output file, starts the encoder, and flips to Recording. */
     private fun beginEncodingOrFail(bitDepth: Int, format: RecordingFormat) {
         val freeBytes = RecordingOutputManager.freeBytes()
@@ -1055,10 +919,6 @@ class RecordingService : LifecycleService() {
         _state.value = RecordingState.Error("USB mixer disconnected")
         _health.value = RecordingHealth(RecordingHealthLevel.ERROR, "USB mixer disconnected")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-    }
-
-    fun setDeviceLabel(label: String) {
-        deviceLabel = label
     }
 
     @Synchronized

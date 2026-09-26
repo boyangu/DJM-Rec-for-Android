@@ -121,36 +121,5 @@ data class AudioStreamingInterfaceInfo(
     val interfaceClass: Int = -1
 )
 
-/**
- * Everything the native libusb raw-isochronous capture path
- * ([com.audiopro.djmrec.audio.AudioEngine.openUsbIso]) needs, bundled together by
- * [UsbAudioManager.openIsoCaptureHandle].
- */
-data class UsbIsoCaptureHandle(
-    /** `UsbDeviceConnection.getFileDescriptor()` -- the connection producing this fd must stay
-     *  open for the lifetime of native capture. */
-    val fd: Int,
-    val interfaceNumber: Int,
-    val alternateSetting: Int,
-    val endpointAddress: Int,
-    val maxPacketSize: Int,
-    val totalChannels: Int,
-    val subframeSize: Int,
-    val bitResolution: Int,
-    val rawDescriptors: ByteArray = byteArrayOf(),
-    val clockControlInterfaceNumber: Int = -1,
-    val clockSourceId: Int = -1,
-    val clockSupportsFrequencySet: Boolean = false,
-    val feedbackEndpointAddress: Int = -1,
-    val feedbackMaxPacketSize: Int = -1,
-    val vendorId: Int = -1,
-    val productId: Int = -1,
-    /** -1 follow profile, 0 force off, 1 force on (see [CaptureOverride]). */
-    val playbackOverride: Int = -1,
-    val endpointRateOverride: Int = -1,
-    /** True when the wire format was entered manually; native logs instead of rejecting mismatches. */
-    val allowFormatMismatch: Boolean = false
-)
-
 /** Settings key for the user's stereo-pair choice on this mixer (read by the app and the report). */
 val UsbAudioDeviceInfo.channelPairPrefKey: String get() = "channel_pair_${vendorId}_${productId}"

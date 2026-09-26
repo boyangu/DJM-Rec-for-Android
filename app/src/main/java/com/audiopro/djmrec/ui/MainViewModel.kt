@@ -19,6 +19,8 @@ import com.audiopro.djmrec.audio.RecordingHealth
 import com.audiopro.djmrec.audio.RecordingState
 import com.audiopro.djmrec.audio.SignalDetector
 import com.audiopro.djmrec.audio.StereoLevels
+import com.audiopro.djmrec.domain.CaptureSessionParams
+import com.audiopro.djmrec.domain.CaptureSource
 import com.audiopro.djmrec.service.RecordingService
 import com.audiopro.djmrec.usb.CaptureOverride
 import com.audiopro.djmrec.usb.CaptureOverrideStore
@@ -521,12 +523,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val intent = buildCaptureIntent(context, device, RecordingService.ACTION_START) ?: return
-        intent.putExtra(RecordingService.EXTRA_FORMAT, _selectedFormat.value.nativeValue)
-        val hadIsoHandle = intent.hasExtra(RecordingService.EXTRA_USB_FD)
-        if (startForegroundServiceSafely(context, intent, hadIsoHandle)) {
-            boundService?.setDeviceLabel(device.productName)
-        }
+        val params = buildSessionParams(device) ?: return
+        launchCapture(context, RecordingService.ACTION_START, params, _selectedFormat.value)
     }
 
     /**
@@ -534,57 +532,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * the selected MIX pair, mic preference and capture level on the way) or falls back to the
      * AAudio device id for plain stereo class devices. Returns null after publishing an error.
      */
-    private fun buildCaptureIntent(context: Context, device: UsbAudioDeviceInfo, action: String): Intent? {
+    private fun buildSessionParams(device: UsbAudioDeviceInfo): CaptureSessionParams? {
         val sampleRate = sampleRateFor(device)
-        val channelOffset = captureChannelOffset(device)
-        val includeMic = _includeMicInMix.value
-        val intent = Intent(context, RecordingService::class.java).apply {
-            this.action = action
-            putExtra(RecordingService.EXTRA_SAMPLE_RATE, sampleRate)
-            putExtra(RecordingService.EXTRA_BIT_DEPTH, device.bitResolution)
-        }
         if (com.audiopro.djmrec.usb.DemoMixer.isDemo(device)) {
-            intent.putExtra(RecordingService.EXTRA_CAPTURE_MODE, RecordingService.CAPTURE_MODE_AAUDIO)
-            intent.putExtra(RecordingService.EXTRA_DEVICE_ID, com.audiopro.djmrec.usb.DemoMixer.AUDIO_DEVICE_ID)
-            return intent
+            return CaptureSessionParams(device.productName, sampleRate, device.bitResolution, CaptureSource.Demo)
         }
-        val handle = if (device.requiresIsoCapture) {
-            usbAudioManager.openIsoCaptureHandle(channelOffset, includeMic, _captureLevelStep.value)
+        val usbSource = if (device.requiresIsoCapture) {
+            usbAudioManager.openIsoCaptureHandle(captureChannelOffset(device), _includeMicInMix.value, _captureLevelStep.value)
         } else {
             null
         }
-        if (handle == null && (device.requiresIsoCapture || device.audioManagerDeviceId < 0)) {
+        if (usbSource == null && (device.requiresIsoCapture || device.audioManagerDeviceId < 0)) {
             _recordingState.value = RecordingState.Error("Cannot open this USB input. Reconnect the mixer and rescan; check USB permission.")
             return null
         }
-        if (handle != null) {
-            intent.putExtra(RecordingService.EXTRA_CAPTURE_MODE, RecordingService.CAPTURE_MODE_USB_ISO)
-            intent.putExtra(RecordingService.EXTRA_USB_FD, handle.fd)
-            intent.putExtra(RecordingService.EXTRA_USB_INTERFACE, handle.interfaceNumber)
-            intent.putExtra(RecordingService.EXTRA_USB_ALT_SETTING, handle.alternateSetting)
-            intent.putExtra(RecordingService.EXTRA_USB_ENDPOINT, handle.endpointAddress)
-            intent.putExtra(RecordingService.EXTRA_USB_MAX_PACKET_SIZE, handle.maxPacketSize)
-            intent.putExtra(RecordingService.EXTRA_USB_TOTAL_CHANNELS, handle.totalChannels)
-            intent.putExtra(RecordingService.EXTRA_USB_SUBFRAME_SIZE, handle.subframeSize)
-            intent.putExtra(RecordingService.EXTRA_USB_CHANNEL_OFFSET, channelOffset)
-            intent.putExtra(RecordingService.EXTRA_USB_INCLUDE_MIC, includeMic)
-            intent.putExtra(RecordingService.EXTRA_USB_CLOCK_CONTROL_INTERFACE, handle.clockControlInterfaceNumber)
-            intent.putExtra(RecordingService.EXTRA_USB_CLOCK_SOURCE_ID, handle.clockSourceId)
-            intent.putExtra(RecordingService.EXTRA_USB_CLOCK_FREQUENCY_SETTABLE, handle.clockSupportsFrequencySet)
-            intent.putExtra(RecordingService.EXTRA_USB_FEEDBACK_ENDPOINT, handle.feedbackEndpointAddress)
-            intent.putExtra(RecordingService.EXTRA_USB_FEEDBACK_MAX_PACKET_SIZE, handle.feedbackMaxPacketSize)
-            intent.putExtra(RecordingService.EXTRA_USB_VENDOR_ID, handle.vendorId)
-            intent.putExtra(RecordingService.EXTRA_USB_PRODUCT_ID, handle.productId)
-            intent.putExtra(RecordingService.EXTRA_USB_RAW_DESCRIPTORS, handle.rawDescriptors)
-            intent.putExtra(RecordingService.EXTRA_USB_PLAYBACK_OVERRIDE, handle.playbackOverride)
-            intent.putExtra(RecordingService.EXTRA_USB_ENDPOINT_RATE_OVERRIDE, handle.endpointRateOverride)
-            intent.putExtra(RecordingService.EXTRA_USB_ALLOW_FORMAT_MISMATCH, handle.allowFormatMismatch)
+        return if (usbSource != null) {
+            // Bit depth from the handle that was opened, not this snapshot of the device.
+            CaptureSessionParams(device.productName, sampleRate, usbSource.bitResolution, usbSource)
         } else {
-            intent.putExtra(RecordingService.EXTRA_CAPTURE_MODE, RecordingService.CAPTURE_MODE_AAUDIO)
-            intent.putExtra(RecordingService.EXTRA_DEVICE_ID, device.audioManagerDeviceId)
-            intent.putExtra(RecordingService.EXTRA_CHANNEL_COUNT, if (device.isPioneer) 2 else device.channelCount)
+            val channels = if (device.isPioneer) 2 else device.channelCount
+            CaptureSessionParams(
+                device.productName, sampleRate, device.bitResolution,
+                CaptureSource.AudioStack(device.audioManagerDeviceId, channels)
+            )
         }
-        return intent
+    }
+
+    /** Hands [params] to the service and starts it; [format] also arms recording for ACTION_START. */
+    private fun launchCapture(
+        context: Context,
+        action: String,
+        params: CaptureSessionParams,
+        format: RecordingFormat? = null
+    ): Boolean {
+        val handoff = (getApplication<Application>() as DjmRecApplication).captureSessionHandoff
+        val id = handoff.offer(params)
+        val intent = Intent(context, RecordingService::class.java)
+            .setAction(action)
+            .putExtra(RecordingService.EXTRA_SESSION_ID, id)
+        format?.let { intent.putExtra(RecordingService.EXTRA_FORMAT, it.nativeValue) }
+        val started = startForegroundServiceSafely(context, intent, params.isUsbIso)
+        if (!started) handoff.drop(id)
+        return started
     }
 
     /** Opens the audio stream for live monitoring (meters + waveform) without writing a file. */
@@ -594,10 +583,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_recordingState.value !is RecordingState.Idle && _recordingState.value !is RecordingState.Error) return
         val device = deviceState.value ?: return
         _recordingState.value = RecordingState.Preparing
-        val intent = buildCaptureIntent(context, device, RecordingService.ACTION_MONITOR) ?: return
-        val hadIsoHandle = intent.hasExtra(RecordingService.EXTRA_USB_FD)
-        if (startForegroundServiceSafely(context, intent, hadIsoHandle)) {
-            boundService?.setDeviceLabel(device.productName)
+        val params = buildSessionParams(device) ?: return
+        if (launchCapture(context, RecordingService.ACTION_MONITOR, params)) {
             Log.i(TAG, "USB attached: auto-starting live monitor for ${device.productName}")
         }
     }

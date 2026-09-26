@@ -60,10 +60,13 @@ path for generic stereo interfaces is being removed.
 
 ```
 UsbAudioManager (Kotlin)     attach/permission → descriptors → profile/format → vendor routes
-        │  fd + ~20 fields as Intent extras
+        │  CaptureSource.UsbIso (fd, endpoint, format, pair, overrides)
+        ▼
+MainViewModel                wraps it in a CaptureSessionParams (label, rate, bit depth, source)
+        │  CaptureSessionHandoff: the start Intent carries only a session id
         ▼
 RecordingService             foreground service, state, polling, health, files, notification
-        │  AudioEngine.openUsbIso(22 args)
+        │  AudioEngine.openUsbIso(source) → one positional JNI call
         ▼
 UsbIsoAudioSource (C++)      claim, keepalive OUT stream (implicit feedback), URBs, demux,
                              zero-packet filter, AUTO pair pick
@@ -76,9 +79,9 @@ UsbAudioEngine (C++)         meter, waveform, ring buffer, encoder thread, WAV/F
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Commit in-tree work, repo hygiene, this document, `scripts/host-tests.sh` | done |
-| 1 | Bug fixes found in review (native use-after-free, `closeAfterSave`, rebind collectors, …) | done (2 deferred to phases 3–4) |
+| 1 | Bug fixes found in review (native use-after-free, `closeAfterSave`, rebind collectors, …) | done (1 deferred to phase 4) |
 | 2 | Delete dead and deprecated code | done |
-| 3 | `CaptureSessionParams`: one description of a session, one JNI call | |
+| 3 | `CaptureSessionParams`: one description of a session, one JNI call | done |
 | 4 | Split `RecordingService` (notifications, wake lock, writer, health supervisor) | |
 | 5 | `RecordingSession` state machine with a real Saving state and typed failures | |
 | 6 | `SettingsStore`, `AppGraph`, break the dependency cycles | |

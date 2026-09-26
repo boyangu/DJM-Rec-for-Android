@@ -64,8 +64,6 @@ public:
         int clockSourceId = -1;
         bool clockSupportsFrequencySet = false;
         int requestedSampleRate = 48000;
-        int feedbackEndpointAddress = -1;
-        int feedbackMaxPacketSize = 0;
         int vendorId = -1;
         int productId = -1;
         // Route REC OUT *with* the mic bus (kernel source 0x0a) rather than "without mic" (0x0e)
