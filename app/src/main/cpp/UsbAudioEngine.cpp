@@ -40,6 +40,7 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
                           int32_t bitDepthHint) {
     std::lock_guard<std::mutex> lock(mControlMutex);
     mLastUsbSetupFailure.clear();
+    mSinkReady.store(false, std::memory_order_release);
     if (mStreamOpen.load()) {
         LOGW("open() called while a stream is already open; closing the previous one first");
     }
@@ -158,6 +159,7 @@ int UsbAudioEngine::open(int32_t audioManagerDeviceId, int32_t sampleRateHint, i
 int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32_t sampleRateHint) {
     std::lock_guard<std::mutex> lock(mControlMutex);
     mLastUsbSetupFailure.clear();
+    mSinkReady.store(false, std::memory_order_release);
     if (mStreamOpen.load()) {
         LOGW("openUsbIso() called while a stream is already open; closing the previous one first");
     }
@@ -210,6 +212,7 @@ int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32
     const size_t ringBufferFrames = static_cast<size_t>(mFormat.sampleRate) * 2;
     mRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * canonicalBytesPerFrame);
     mWaveformAnalyzer = std::make_unique<WaveformAnalyzer>(mFormat.sampleRate);
+    mSinkReady.store(true, std::memory_order_release);
 
     mStreamOpen.store(true, std::memory_order_release);
     LOGI("USB iso capture open: %d Hz, 2ch extracted from a %dch wire "
@@ -222,6 +225,7 @@ int UsbAudioEngine::openUsbIso(const UsbIsoAudioSource::Config& isoConfig, int32
 int UsbAudioEngine::openDemo(int32_t sampleRate, int32_t bitDepth) {
     std::lock_guard<std::mutex> lock(mControlMutex);
     mLastUsbSetupFailure.clear();
+    mSinkReady.store(false, std::memory_order_release);
     if (mStream) {
         mStream->requestStop();
         mStream->close();
@@ -242,6 +246,7 @@ int UsbAudioEngine::openDemo(int32_t sampleRate, int32_t bitDepth) {
     const size_t ringBufferFrames = static_cast<size_t>(mFormat.sampleRate) * 2;
     mRingBuffer = std::make_unique<RingBuffer>(ringBufferFrames * bytesPerFrameFor(oboe::AudioFormat::I32, 2));
     mWaveformAnalyzer = std::make_unique<WaveformAnalyzer>(mFormat.sampleRate);
+    mSinkReady.store(true, std::memory_order_release);
 
     mDemoRunning.store(true, std::memory_order_release);
     mDemoThread = std::thread(&UsbAudioEngine::demoThreadLoop, this, mFormat.sampleRate);
@@ -276,6 +281,7 @@ void UsbAudioEngine::onUsbIsoFrames(const int32_t* interleavedStereo, size_t fra
     // Mirrors the tail of onAudioReady() below -- meter update + optional ring-buffer write --
     // but always against a canonical, already-2-channel buffer (no per-format decode needed
     // here; UsbIsoAudioSource already produced left-justified, sign-extended int32 samples).
+    if (!mSinkReady.load(std::memory_order_acquire)) return;
     static thread_local std::vector<int32_t> amplified;
     const size_t sampleCount = frameCount * 2;
     if (amplified.size() < sampleCount) amplified.resize(sampleCount);
@@ -614,7 +620,9 @@ void UsbAudioEngine::closeEngine() {
         mUsbIsoSource.reset();
     }
     stopDemoLocked();
+    mSinkReady.store(false, std::memory_order_release);
     mRingBuffer.reset();
+    mWaveformAnalyzer.reset();
     mSourceMode = SourceMode::None;
     mStreamOpen.store(false, std::memory_order_release);
 }

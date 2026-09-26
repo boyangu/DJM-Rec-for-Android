@@ -1103,17 +1103,15 @@ void UsbIsoAudioSource::configurePioneerRecordingRoute() {
 
 void UsbIsoAudioSource::routePioneerOutputToMix(int output) {
     if (!mHandle || !mMixerProfile || output < 0 || output >= mMixerProfile->outputCount) return;
+    const int targetSource = pioneerMixSource(*mMixerProfile, output, mConfig.includeMicInMix);
+    if (targetSource < 0) return;
+    // The route GET is not a live readout on every model (see UsbAudioManager.establishPioneerRoute),
+    // so it only decides whether a write is needed and whether a restore is safe. It must never
+    // undo a write: rolling back on a stale readback overwrote the MIX route Kotlin had just set.
     int currentSource = -1;
     const bool readCurrent =
         readPioneerRouteSource(mHandle, *mMixerProfile, output, currentSource);
-    if (!readCurrent) {
-        LOGW("%s USB output %d route is unreadable; refusing an unrestorable change",
-             mMixerProfile->name, output + 1);
-        return;
-    }
-    const int targetSource = pioneerMixSource(*mMixerProfile, output, mConfig.includeMicInMix);
-    if (targetSource < 0) return;
-    if (currentSource == targetSource) {
+    if (readCurrent && currentSource == targetSource) {
         std::lock_guard<std::mutex> lock(mDiagnosticMutex);
         mPioneerAppliedSources[output] = currentSource;
         LOGI("%s USB output %d already routed to MIX (source 0x%02x)",
@@ -1122,22 +1120,16 @@ void UsbIsoAudioSource::routePioneerOutputToMix(int output) {
     }
 
     if (!writePioneerRouteSource(mHandle, *mMixerProfile, output, targetSource)) return;
-    int verifiedSource = -1;
-    if (!readPioneerRouteSource(mHandle, *mMixerProfile, output, verifiedSource) ||
-        verifiedSource != targetSource) {
-        LOGW("%s USB output %d MIX source did not verify: expected=0x%02x actual=0x%02x",
-             mMixerProfile->name, output + 1, targetSource, verifiedSource);
-        writePioneerRouteSource(mHandle, *mMixerProfile, output, currentSource);
-        return;
-    }
     {
         std::lock_guard<std::mutex> lock(mDiagnosticMutex);
-        mPioneerOriginalSources[output] = currentSource;
         mPioneerAppliedSources[output] = targetSource;
-        mPioneerRoutesChanged[output] = true;
+        // Only a readable original can be put back on stop.
+        mPioneerOriginalSources[output] = readCurrent ? currentSource : -1;
+        mPioneerRoutesChanged[output] = readCurrent;
     }
-    LOGI("%s USB output %d routed to MIX/REC OUT, source=0x%02x previous=0x%02x",
-         mMixerProfile->name, output + 1, targetSource, currentSource);
+    LOGI("%s USB output %d routed to MIX/REC OUT, source=0x%02x previous=%s",
+         mMixerProfile->name, output + 1, targetSource,
+         readCurrent ? std::to_string(currentSource).c_str() : "unreadable");
 }
 
 void UsbIsoAudioSource::restorePioneerRecordingRoute() {

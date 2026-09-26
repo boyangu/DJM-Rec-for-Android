@@ -26,7 +26,9 @@ import com.audiopro.djmrec.usb.CaptureOverride
 import com.audiopro.djmrec.usb.CaptureOverrideStore
 import com.audiopro.djmrec.usb.UsbAudioDeviceInfo
 import com.audiopro.djmrec.usb.UsbAudioManager
+import com.audiopro.djmrec.usb.channelPairPrefKey
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,7 +48,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "MainViewModel"
         private const val PREFS_NAME = "settings"
-        private const val KEY_USB_CHANNEL_OFFSET = "usb_channel_offset"
         private const val KEY_WAVEFORM_ENABLED = "waveform_enabled"
         private const val KEY_INCLUDE_MIC = "include_mic_in_mix"
         private const val KEY_SILENCE_HOLD_MS = "silence_hold_ms"
@@ -220,14 +221,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val selectedFormat: StateFlow<RecordingFormat> = _selectedFormat.asStateFlow()
     val availableFormats: List<RecordingFormat> = RecordingFormat.entries
 
-    private val _usbChannelOffset = MutableStateFlow(
-        prefs.getInt(KEY_USB_CHANNEL_OFFSET, UsbAudioManager.AUTO_CHANNEL_OFFSET)
-    )
+    // Loaded per mixer when one attaches (channelPairPrefKey); AUTO until then.
+    private val _usbChannelOffset = MutableStateFlow(UsbAudioManager.AUTO_CHANNEL_OFFSET)
     val usbChannelOffset: StateFlow<Int> = _usbChannelOffset.asStateFlow()
 
     @SuppressLint("StaticFieldLeak")
     private var boundService: RecordingService? = null
+    /** Whether bindService registered the connection; stays true until unbindService. */
     private var isBound = false
+    /** Parent of the collectors mirroring the bound service; replaced on every (re)connection. */
+    private var serviceMirror: Job? = null
     private var uiVisible = false
     private var waveformVisible = false
 
@@ -245,25 +248,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as RecordingService.LocalBinder).getService()
             boundService = service
-            isBound = true
             _recordingState.value = service.state.value
             service.setVisualsVisible(uiVisible && !_saverActive.value, waveformVisible)
             service.setWaveformEnabled(_waveformEnabled.value)
             service.setRecordingGainDb(_recordingGainDb.value)
             service.setSilenceHoldMs(_silenceHoldMs.value)
-            viewModelScope.launch { service.saving.collect { saving.value = it } }
-            viewModelScope.launch { service.state.collect { _recordingState.value = it; updateSaver() } }
-            viewModelScope.launch { service.levels.collect { _levels.value = it } }
-            viewModelScope.launch { service.elapsedMillis.collect { _elapsedMillis.value = it } }
-            viewModelScope.launch { service.waveformBins.collect { _waveformBins.value = it } }
-            viewModelScope.launch { service.health.collect { _recordingHealth.value = it } }
-            viewModelScope.launch { service.signalPresent.collect { _signalPresent.value = it } }
+            // A service restart reconnects; drop the collectors still attached to the old instance.
+            serviceMirror?.cancel()
+            serviceMirror = viewModelScope.launch {
+                launch { service.saving.collect { saving.value = it } }
+                launch { service.state.collect { _recordingState.value = it; updateSaver() } }
+                launch { service.levels.collect { _levels.value = it } }
+                launch { service.elapsedMillis.collect { _elapsedMillis.value = it } }
+                launch { service.waveformBins.collect { _waveformBins.value = it } }
+                launch { service.health.collect { _recordingHealth.value = it } }
+                launch { service.signalPresent.collect { _signalPresent.value = it } }
+            }
             ensureLiveMonitoring()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            // The binding itself stays registered (BIND_AUTO_CREATE reconnects), so isBound is
+            // left alone; only the mirror of the dead instance goes.
+            serviceMirror?.cancel()
+            serviceMirror = null
             boundService = null
-            isBound = false
         }
     }
 
@@ -273,7 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // MULTI I/O port is a USB *host* port for iPhone/iPad; Android cannot act as a USB audio
         // device, so only the rear PC/Mac port can ever work.
         prefs.edit().remove("force_android_capture").remove("djmrec_port_mode").apply()
-        context.bindService(
+        isBound = context.bindService(
             Intent(context, RecordingService::class.java), connection, Context.BIND_AUTO_CREATE
         )
         // The idle countdown has no event of its own; a once-a-second check is plenty for 30 s.
@@ -293,7 +302,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val key = "${device.deviceName}:${device.vendorId}:${device.productId}"
                 if (key == activeDeviceKey) return@collect
                 activeDeviceKey = key
-                val pairKey = "channel_pair_${device.vendorId}_${device.productId}"
+                val pairKey = device.channelPairPrefKey
                 val storedPair = prefs.getInt(pairKey, UsbAudioManager.AUTO_CHANNEL_OFFSET)
                 _usbChannelOffset.value = storedPair.takeIf { it >= 0 && it % 2 == 0 && it + 1 < device.channelCount }
                     ?: UsbAudioManager.AUTO_CHANNEL_OFFSET
@@ -353,9 +362,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun rescanUsbDevices() {
         if (saving.value) return
-        if (_recordingState.value is RecordingState.Recording ||
-            _recordingState.value is RecordingState.Paused ||
-            _recordingState.value is RecordingState.Preparing) return
+        // Only Idle/Error need a rescan. While a stream is open the mixer is attached by
+        // definition, and a scan that momentarily finds nothing publishes a null device, which
+        // the service treats as an unplug.
+        if (_recordingState.value !is RecordingState.Idle &&
+            _recordingState.value !is RecordingState.Error) return
         usbAudioManager.scanForConnectedMixer()
         ensureLiveMonitoring()
     }
@@ -380,7 +391,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val sanitized = if (offset < 0) UsbAudioManager.AUTO_CHANNEL_OFFSET else offset
         if (sanitized == _usbChannelOffset.value) return
         val device = deviceState.value ?: return
-        prefs.edit().putInt("channel_pair_${device.vendorId}_${device.productId}", sanitized).apply()
+        prefs.edit().putInt(device.channelPairPrefKey, sanitized).apply()
         _usbChannelOffset.value = sanitized
 
         // The offset is only read when the native capture session opens (baked into the
@@ -659,6 +670,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             getApplication<Application>().unbindService(connection)
             isBound = false
         }
+        serviceMirror?.cancel()
         boundService = null
         super.onCleared()
     }

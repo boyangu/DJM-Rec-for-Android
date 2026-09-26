@@ -324,6 +324,8 @@ class RecordingService : LifecycleService() {
     private val _saving = MutableStateFlow(false)
     val saving: StateFlow<Boolean> = _saving.asStateFlow()
     private var closeAfterSave = false
+    /** The mixer went away while a recording was being saved; handle it once the save lands. */
+    private var detachAfterSave = false
 
     override fun onCreate() {
         super.onCreate()
@@ -390,12 +392,18 @@ class RecordingService : LifecycleService() {
 
     /** Applies the user's Silence hold preference; takes effect on the current gap immediately. */
     fun setSilenceHoldMs(holdMs: Long) {
-        signalDetector.holdMs = SignalDetector.sanitizeHoldMs(holdMs)
+        val sanitized = SignalDetector.sanitizeHoldMs(holdMs)
+        onMonitorThread { signalDetector.holdMs = sanitized }
     }
 
     private fun resetSignalDetector() {
-        signalDetector.reset()
+        onMonitorThread { signalDetector.reset() }
         _signalPresent.value = false
+    }
+
+    /** SignalDetector is not thread-safe and belongs to the monitor thread that updates it. */
+    private fun onMonitorThread(block: () -> Unit) {
+        if (::monitorHandler.isInitialized) monitorHandler.post(block) else block()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -974,7 +982,12 @@ class RecordingService : LifecycleService() {
             }
             _saving.value = false
             if (complete) updateNotification()
-            if (closeAfterSave) closeCaptureAndTask()
+            if (closeAfterSave) {
+                closeCaptureAndTask()
+            } else if (detachAfterSave) {
+                detachAfterSave = false
+                handleDeviceDetached()
+            }
         }
     }
 
@@ -987,6 +1000,8 @@ class RecordingService : LifecycleService() {
     }
 
     private fun closeCaptureAndTask() {
+        closeAfterSave = false
+        detachAfterSave = false
         AudioEngine.close()
         releaseIsoConnectionIfNeeded()
         releaseWakeLock()
@@ -1032,7 +1047,9 @@ class RecordingService : LifecycleService() {
     }
 
     private fun handleDeviceDetached() {
-        if (_saving.value) { closeAfterSave = true; return }
+        // Not closeAfterSave: that closes the whole app. An unplug during a save should end in the
+        // normal "mixer disconnected" state once the file is safe.
+        if (_saving.value) { detachAfterSave = true; return }
         pendingRecordingFormat = null
         if (_state.value is RecordingState.Recording || _state.value is RecordingState.Paused) {
             stopSessionWithError("USB mixer disconnected. Recording finalized safely.")

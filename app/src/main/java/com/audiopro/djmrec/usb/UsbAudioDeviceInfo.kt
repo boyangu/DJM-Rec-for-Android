@@ -151,3 +151,6 @@ data class UsbIsoCaptureHandle(
     /** True when the wire format was entered manually; native logs instead of rejecting mismatches. */
     val allowFormatMismatch: Boolean = false
 )
+
+/** Settings key for the user's stereo-pair choice on this mixer (read by the app and the report). */
+val UsbAudioDeviceInfo.channelPairPrefKey: String get() = "channel_pair_${vendorId}_${productId}"

@@ -18,6 +18,13 @@ std::string jstringToStdString(JNIEnv* env, jstring jStr) {
 }
 } // namespace
 
+// The writer factories switch on ContainerFormat with no default; an int outside the enum would
+// leave the writer null and crash on the next line. Reject it here instead.
+static bool isValidContainer(jint format) {
+    return format == static_cast<jint>(ContainerFormat::Wav) ||
+           format == static_cast<jint>(ContainerFormat::Flac);
+}
+
 extern "C" {
 
 JNIEXPORT void JNICALL
@@ -90,6 +97,7 @@ JNIEXPORT jboolean JNICALL
 Java_com_audiopro_djmrec_audio_AudioEngine_startRecording(
     JNIEnv* env, jobject /*thiz*/,
     jstring outputPath, jint format) {
+    if (!isValidContainer(format)) return JNI_FALSE;
     const std::string path = jstringToStdString(env, outputPath);
     const auto container = static_cast<ContainerFormat>(format);
     return UsbAudioEngine::instance().startRecording(path, container) ? JNI_TRUE : JNI_FALSE;
@@ -98,6 +106,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_startRecording(
 JNIEXPORT jboolean JNICALL
 Java_com_audiopro_djmrec_audio_AudioEngine_startRecordingFd(
     JNIEnv* /*env*/, jobject /*thiz*/, jint fd, jint format) {
+    if (!isValidContainer(format)) return JNI_FALSE;
     return UsbAudioEngine::instance().startRecordingFd(
         fd, static_cast<ContainerFormat>(format)) ? JNI_TRUE : JNI_FALSE;
 }
@@ -105,6 +114,7 @@ Java_com_audiopro_djmrec_audio_AudioEngine_startRecordingFd(
 JNIEXPORT jboolean JNICALL
 Java_com_audiopro_djmrec_audio_AudioEngine_rollRecordingFd(
     JNIEnv* /*env*/, jobject /*thiz*/, jint fd, jint format) {
+    if (!isValidContainer(format)) return JNI_FALSE;
     return UsbAudioEngine::instance().rollRecordingFd(
         fd, static_cast<ContainerFormat>(format)) ? JNI_TRUE : JNI_FALSE;
 }

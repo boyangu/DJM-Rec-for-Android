@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fix bugs found in an architecture review:
+  - Native: a new USB session could push audio into the previous session's waveform analyzer
+    while it was being freed (the source streams during its rate probe, before the new buffers
+    existed). Frames are now dropped until the session's buffers are in place, and closing the
+    engine frees the analyzer.
+  - Native: an invalid recording format from Kotlin could crash the writer; it is now rejected.
+  - Native no longer undoes a MIX route write when the route register reads back stale. On
+    models where that readback is not live, it was reverting the route Kotlin had just set.
+  - Unplugging the mixer while a set was being saved closed the whole app once the save
+    finished. It now ends in the normal "mixer disconnected" state.
+  - A service restart stacked a second set of state collectors in the UI; they are now replaced,
+    and the service binding is tracked from bindService itself.
+  - The diagnostic report always showed the stereo pair as "Auto"; it now reads the mixer's
+    actual setting.
+  - The silence-detection hold time and reset now run on the thread that owns the detector.
+  - Coming back to the app while monitoring no longer rescans USB, which could report the mixer
+    as unplugged.
 - Move the audio forensics scripts (`find_clicks.py`, `find_echo.py`, `repair_zero_holes.py`) from
   `scripts/` to `tools/audio/`, with a README. `scripts/` now holds build and dev scripts only.
 - Debug builds run in the Android emulator on a PC. On an emulator with no USB device, a demo

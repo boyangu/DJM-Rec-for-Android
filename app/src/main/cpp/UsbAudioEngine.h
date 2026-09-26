@@ -139,6 +139,11 @@ private:
     mutable std::mutex mControlMutex; // guards start/stop/pause transitions (not the realtime path)
     mutable std::mutex mWriterMutex;
     std::atomic<bool> mStreamOpen{false};
+    // True only while mRingBuffer and mWaveformAnalyzer belong to the running source. A source's
+    // frames can arrive before its open() has finished allocating them (the USB source streams
+    // during its rate probe); onUsbIsoFrames drops those rather than touch the previous session's
+    // buffers while they are being replaced.
+    std::atomic<bool> mSinkReady{false};
     std::atomic<bool> mRecording{false};
     std::atomic<bool> mPaused{false};
     std::atomic<bool> mStopRequested{false};

@@ -12,6 +12,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import com.audiopro.djmrec.BuildConfig
 import com.audiopro.djmrec.audio.AudioEngine
+import com.audiopro.djmrec.usb.channelPairPrefKey
 import com.audiopro.djmrec.storage.RecordingOutputManager
 import com.audiopro.djmrec.storage.RecordingSessionStore
 import java.io.BufferedReader
@@ -33,7 +34,6 @@ object LogExporter {
 
     private const val TAG = "LogExporter"
     private const val PREFS_NAME = "settings"
-    private const val KEY_USB_CHANNEL_OFFSET = "usb_channel_offset"
     private const val KEY_INCLUDE_MIC = "include_mic_in_mix"
 
     /** Runs on whatever thread it's called from — callers should invoke off the main thread. */
@@ -167,7 +167,9 @@ object LogExporter {
 
     private fun appendUsbCaptureSettingsSection(context: Context, sb: StringBuilder) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val offset = prefs.getInt(KEY_USB_CHANNEL_OFFSET, -1)
+        val device = (context.applicationContext as? com.audiopro.djmrec.DjmRecApplication)
+            ?.let { it.usbAudioManager.deviceState.value }
+        val offset = device?.let { prefs.getInt(it.channelPairPrefKey, -1) } ?: -1
         sb.appendLine("=== USB capture settings ===")
         sb.appendLine("capture path: Raw libusb isochronous (AAudio only for plain stereo class devices)")
         sb.appendLine(
