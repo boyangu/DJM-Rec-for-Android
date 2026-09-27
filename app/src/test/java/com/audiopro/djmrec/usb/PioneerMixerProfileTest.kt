@@ -50,6 +50,30 @@ class PioneerMixerProfileTest {
     }
 
     @Test
+    fun `DJM-900NXS enumerates under the Pioneer Corporation vendor id`() {
+        val profile = PioneerMixerProfile.find(PioneerMixerProfile.PIONEER_CORP_VENDOR_ID, 0x0158)!!
+        assertEquals(PioneerMixerProfile.DJM_900NXS, profile)
+        assertNull(PioneerMixerProfile.find(PioneerMixerProfile.ALPHATHETA_VENDOR_ID, 0x0158))
+        assertEquals(0x08E4, profile.vendorId)
+        assertEquals(PioneerMixerProfile.ALPHATHETA_VENDOR_ID, PioneerMixerProfile.DJM_900NXS2.vendorId)
+        // Sibling contract from the kernel's DJM-750/850 entries: 8 ch, 24-bit in 3-byte slots,
+        // if0/alt1, 44.1/48/96 kHz, REC OUT on all four pairs, no without-mic variant.
+        assertTrue(profile.hasVendorCaptureOverride)
+        assertEquals(0, profile.vendorCaptureInterface)
+        assertEquals(8, profile.vendorCaptureChannelCount)
+        assertEquals(listOf(44_100, 48_000, 96_000), profile.vendorCaptureSampleRates)
+        assertEquals(4, profile.outputCount)
+        assertEquals(6, profile.defaultCaptureChannelOffset)
+        assertEquals(0x040A, profile.mixRouteValue(3, includeMic = false))
+        assertEquals(-1, profile.mixRouteValue(4, includeMic = true))
+        assertFalse(profile.supportsMicToggle)
+        assertFalse(profile.supportsCaptureLevel)
+        assertTrue(profile.requiresPlaybackTraffic)
+        assertEquals(PioneerMixerProfile.RouteReadMode.NONE, profile.routeReadMode)
+        assertFalse(profile.isHardwareConfirmed)
+    }
+
+    @Test
     fun `rejects unknown products and vendors`() {
         assertNull(PioneerMixerProfile.find(PioneerMixerProfile.ALPHATHETA_VENDOR_ID, 0xFFFF))
         assertNull(PioneerMixerProfile.find(0x08E4, 0x003C))

@@ -69,10 +69,13 @@ data class UsbAudioDeviceInfo(
 
     /**
      * USB IDs handed to native code so its profile table agrees with [pioneerMixerProfile]: a
-     * forced profile is represented by that profile's first product ID, "class-compliant only"
+     * forced profile is represented by that profile's own vendor ID and first product ID (so a
+     * 0x2B73 profile can be forced onto a 0x08E4 device and vice versa), "class-compliant only"
      * by a vendor ID the native table cannot match.
      */
-    val nativeVendorId: Int get() = if (captureOverride.profile == CaptureOverride.PROFILE_NONE) -1 else vendorId
+    val nativeVendorId: Int
+        get() = if (captureOverride.profile == CaptureOverride.PROFILE_NONE) -1
+        else captureOverride.forcedProfile?.vendorId ?: vendorId
     val nativeProductId: Int
         get() = captureOverride.forcedProfile?.productIds?.minOrNull() ?: productId
 

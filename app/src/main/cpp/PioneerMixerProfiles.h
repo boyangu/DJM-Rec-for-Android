@@ -11,6 +11,11 @@ enum class PioneerRouteReadMode {
     AllOutputs
 };
 
+constexpr int kAlphaThetaVendorId = 0x2B73;
+// Pioneer Corporation, the ID before the DJ business became Pioneer DJ / AlphaTheta
+// (DJM-900NXS, DJM-750, DJM-850).
+constexpr int kPioneerCorpVendorId = 0x08E4;
+
 struct PioneerMixerProfile {
     const char* name;
     int productIdFirst;
@@ -34,9 +39,9 @@ struct PioneerMixerProfile {
     int captureInSubframeBytes;
     int captureInBitResolution;
     int fixedCaptureInSampleRate;
+    // Vendor ID the model enumerates under; left out of an initialiser it is AlphaTheta.
+    int vendorId = kAlphaThetaVendorId;
 };
-
-constexpr int kAlphaThetaVendorId = 0x2B73;
 
 // Vendor route register shared by every DJM model (Linux mixer_quirks.c, snd_djm_controls_update):
 //   bmRequestType 0x40 (vendor | device | OUT), bRequest 0x03 (SET_FEATURE),
@@ -109,6 +114,25 @@ constexpr PioneerMixerProfile kDjm900Nxs2Profile{
     PioneerRouteReadMode::AllOutputs, true, true, 0, 1,
     10, 3,  // playback OUT keepalive (10ch per ALSA snd-usb-audio quirk)
     12, 3, 24, 96000 // capture IN PCM
+};
+
+// DJM-900NXS, the original 2011 "nexus" (08e4:0158 per Pioneer's Windows driver hardware ID).
+// No kernel entry and no descriptor dump yet. Built from its same-generation siblings that the
+// kernel does carry, DJM-750 (08e4:017f) and DJM-850 (08e4:0163): 8 ch out / 8 ch in S24_3LE at
+// 44.1/48/96 kHz on a vendor-class if0/alt1, OUT EP 0x05, implicit-feedback IN EP 0x86; kernel
+// snd_djm_opts_750/850_cap1..4 list 0x0a (REC OUT) on all four pairs and no without-mic variant.
+// Pioneer's spec for the 900nexus ("4 ins and 4 outs, 96 kHz/24-bit") and its Setting Utility's
+// REC OUT option per USB pair agree. Duplex keepalive and the endpoint rate command follow the
+// NXS2. Default REC OUT pair is USB 7/8 (output 3) so a DVS setup's CH1..3 pairs are left alone.
+// Kotlin scans if0/alt1 for the IN endpoint and falls back to a generic scan if the layout differs.
+constexpr PioneerMixerProfile kDjm900NxsProfile{
+    "DJM-900NXS", 0x0158, 0x0158, 4, 3,
+    {0x0A, 0x0A, 0x0A, 0x0A, -1, -1},
+    {-1, -1, -1, -1, -1, -1},
+    PioneerRouteReadMode::None, true, true, 0, 1,
+    8, 3,  // playback OUT keepalive
+    8, 3, 24, 0, // capture IN PCM, any of the three rates
+    kPioneerCorpVendorId
 };
 
 // Same vendor-class interface topology as DJM-900NXS2: isochronous IN endpoint (0x82) lives on
@@ -188,13 +212,13 @@ constexpr PioneerMixerProfile kDdjFlx10Profile{
 };
 
 inline const PioneerMixerProfile* findPioneerMixerProfile(int vendorId, int productId) {
-    if (vendorId != kAlphaThetaVendorId) return nullptr;
     constexpr const PioneerMixerProfile* profiles[] = {
-        &kDjmA9Profile, &kDjmV10Profile, &kDjmV5Profile, &kDjm900Nxs2Profile,
+        &kDjmA9Profile, &kDjmV10Profile, &kDjmV5Profile, &kDjm900Nxs2Profile, &kDjm900NxsProfile,
         &kDjm750Mk2Profile, &kDjm450Profile, &kDjmS11Profile, &kDdjFlx10Profile
     };
     for (const auto* profile : profiles) {
-        if (productId >= profile->productIdFirst && productId <= profile->productIdLast) {
+        if (profile->vendorId == vendorId &&
+            productId >= profile->productIdFirst && productId <= profile->productIdLast) {
             return profile;
         }
     }

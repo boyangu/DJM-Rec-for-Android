@@ -68,6 +68,20 @@ int main() {
     assert(kDdjFlx10Profile.captureInChannels == 0 && kDdjFlx10Profile.fixedCaptureInSampleRate == 44100);
     assert(!pioneerSupportsCaptureLevel(kDdjFlx10Profile));
 
+    // DJM-900NXS (Pioneer Corporation vendor ID): four REC OUT pairs, USB 7/8 by default, 8 ch
+    // duplex on if0/alt1, any of the three rates.
+    assert(findPioneerMixerProfile(kPioneerCorpVendorId, 0x0158) == &kDjm900NxsProfile);
+    assert(findPioneerMixerProfile(kAlphaThetaVendorId, 0x0158) == nullptr);
+    assert(pioneerMixRouteValue(kDjm900NxsProfile, -1) == 0x040a);
+    assert(pioneerMixRouteValue(kDjm900NxsProfile, 0) == 0x010a);
+    assert(pioneerMixRouteValue(kDjm900NxsProfile, 6, false) == 0x040a);
+    assert(pioneerMixRouteValue(kDjm900NxsProfile, 8) == -1);
+    assert(kDjm900NxsProfile.requiresPlaybackTraffic && kDjm900NxsProfile.usesEndpointSampleRate);
+    assert(kDjm900NxsProfile.playbackInterface == 0 && kDjm900NxsProfile.playbackOutChannels == 8);
+    assert(kDjm900NxsProfile.captureInChannels == 8 && kDjm900NxsProfile.fixedCaptureInSampleRate == 0);
+    assert(!pioneerSupportsCaptureLevel(kDjm900NxsProfile));
+    assert(kDjmA9Profile.vendorId == kAlphaThetaVendorId);
+
     // Lookup by USB ID.
     assert(findPioneerMixerProfile(kAlphaThetaVendorId, 0x003C) == &kDjmA9Profile);
     assert(findPioneerMixerProfile(kAlphaThetaVendorId, 0x0034) == &kDjmV10Profile);

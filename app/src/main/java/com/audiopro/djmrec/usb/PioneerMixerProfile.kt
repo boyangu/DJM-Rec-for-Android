@@ -1,5 +1,9 @@
 package com.audiopro.djmrec.usb
 
+// File-level so enum entries can use them: an entry initialiser runs before the companion exists.
+private const val ALPHATHETA_VENDOR = 0x2B73
+private const val PIONEER_CORP_VENDOR = 0x08E4
+
 /**
  * USB identities with known Pioneer / AlphaTheta mixer USB contracts and optional proprietary
  * routing.
@@ -79,7 +83,12 @@ enum class PioneerMixerProfile(
      * `SND_DJM_WINDEX_CAPLVL`, wIndex 0x8003) with the A9/V10 scale: wValue 0x0000 = +15 dB,
      * 0x0100 = +12, 0x0200 = +9, 0x0300 = +6, 0x0400 = +3, 0x0500 = 0 dB.
      */
-    val supportsCaptureLevel: Boolean = false
+    val supportsCaptureLevel: Boolean = false,
+    /**
+     * USB vendor ID the model enumerates under. Everything from the DJM-900NXS2 on is AlphaTheta
+     * (0x2B73); the 2011-era DJM-900NXS, DJM-750 and DJM-850 are Pioneer Corporation (0x08E4).
+     */
+    val vendorId: Int = ALPHATHETA_VENDOR
 ) {
     // Kernel snd_djm_opts_a9_cap1..5: every pair lists 0x0a (REC OUT) and 0x0e (REC OUT without
     // mic). 0x09 is the kernel's mic-only source and is deliberately NOT a MIX route here.
@@ -121,6 +130,29 @@ enum class PioneerMixerProfile(
         vendorCaptureChannelCount = 12, vendorCaptureSubframeSize = 3, vendorCaptureBitResolution = 24,
         vendorCaptureSampleRates = listOf(96_000),
         additionalMixOutputs = listOf(4)
+    ),
+    // DJM-900NXS, the original 2011 "nexus" (08e4:0158, the hardware ID in Pioneer's Windows
+    // driver, USB\VID_08E4&PID_0158). No kernel entry and no descriptor dump yet; the profile is
+    // built from its two siblings of the same generation and USB silicon, which the kernel does
+    // carry: DJM-750 (08e4:017f) and DJM-850 (08e4:0163), quirks-table.h "8 channels playback &
+    // 8 channels capture @ 44.1/48/96kHz S24LE", a vendor-class if0/alt1 with OUT EP 0x05 and
+    // implicit-feedback IN EP 0x86, and mixer_quirks.c snd_djm_opts_750/850_cap1..4, where every
+    // pair lists 0x0a (REC OUT) and none 0x0e. Pioneer's own spec for the 900nexus matches: "4
+    // ins and 4 outs, 96 kHz/24-bit", and its Setting Utility offers the same source names (CH,
+    // Post CH Fader, Cross Fader A/B, MIC, REC OUT) per USB pair. The vendor-capture interface is
+    // only a first guess: UsbAudioManager scans if0/alt1 for the isochronous IN endpoint, and if
+    // the layout differs falls back to the largest one on any interface (8-channel template for
+    // this vendor) and says so in the UI. Duplex keepalive and the endpoint rate command follow
+    // the NXS2, whose capture stayed silent without them. USB 7/8 is the default REC OUT pair so
+    // the CH1..3 pairs a DVS setup relies on are left alone; the pair picker offers all four.
+    DJM_900NXS(
+        "DJM-900NXS", setOf(0x0158), 6, 4, RouteReadMode.NONE,
+        List(4) { 0x0A }, List(4) { -1 },
+        requiresPlaybackTraffic = true, playbackInterface = 0, playbackAlternateSetting = 1,
+        vendorCaptureInterface = 0, vendorCaptureAlternateSetting = 1,
+        vendorCaptureChannelCount = 8, vendorCaptureSubframeSize = 3, vendorCaptureBitResolution = 24,
+        vendorCaptureSampleRates = listOf(44_100, 48_000, 96_000),
+        vendorId = PIONEER_CORP_VENDOR
     ),
     // Kernel snd_djm_opts_750mk2_cap1..5 list 0x0a on all five pairs; factory REC OUT is USB 9/10
     // (kernel default index 3 of cap5 = 0x050a). The previous 0x0f ("None") entries are not in
@@ -231,7 +263,11 @@ enum class PioneerMixerProfile(
         }
 
     companion object {
-        const val ALPHATHETA_VENDOR_ID = 0x2B73
+        const val ALPHATHETA_VENDOR_ID = ALPHATHETA_VENDOR
+        /** Pioneer Corporation, used until the DJ business became Pioneer DJ / AlphaTheta. */
+        const val PIONEER_CORP_VENDOR_ID = PIONEER_CORP_VENDOR
+        /** Every vendor ID a profiled mixer enumerates under. */
+        val VENDOR_IDS: Set<Int> = setOf(ALPHATHETA_VENDOR_ID, PIONEER_CORP_VENDOR_ID)
         const val ROUTE_GET_REQUEST = 0x00
         const val ROUTE_SET_REQUEST = 0x03
         const val ROUTE_INDEX = 0x8002
@@ -244,9 +280,7 @@ enum class PioneerMixerProfile(
         /** `wValue` for the capture level register at [stepIndex] (0 = +15 dB ... 5 = 0 dB). */
         fun captureLevelValue(stepIndex: Int): Int = (stepIndex.coerceIn(0, CAPTURE_LEVEL_STEPS_DB.size - 1)) shl 8
 
-        fun find(vendorId: Int, productId: Int): PioneerMixerProfile? {
-            if (vendorId != ALPHATHETA_VENDOR_ID) return null
-            return entries.firstOrNull { productId in it.productIds }
-        }
+        fun find(vendorId: Int, productId: Int): PioneerMixerProfile? =
+            entries.firstOrNull { it.vendorId == vendorId && productId in it.productIds }
     }
 }

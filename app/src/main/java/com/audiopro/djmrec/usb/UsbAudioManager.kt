@@ -39,20 +39,25 @@ class UsbAudioManager(private val context: Context) {
         const val ACTION_USB_PERMISSION = "com.audiopro.djmrec.USB_PERMISSION"
 
         /**
-         * AlphaTheta / Pioneer DJ USB vendor ID. Every DJM/XDJ this app knows enumerates under
-         * it; the legacy Pioneer Corporation ID (0x08E4, DJM-750/850) has no profile here.
+         * AlphaTheta / Pioneer DJ (0x2B73) and the older Pioneer Corporation ID (0x08E4, which the
+         * DJM-900NXS, DJM-750 and DJM-850 enumerate under).
          */
-        val PIONEER_VENDOR_IDS = setOf(PioneerMixerProfile.ALPHATHETA_VENDOR_ID)
+        val PIONEER_VENDOR_IDS = PioneerMixerProfile.VENDOR_IDS
 
         const val AUTO_CHANNEL_OFFSET = CaptureSource.UsbIso.AUTO_CHANNEL_OFFSET
         private fun isPioneerDevice(device: UsbDevice) = device.vendorId in PIONEER_VENDOR_IDS
 
         /**
-         * Wire format assumed for an AlphaTheta device that exposes neither standard UAC
+         * Wire format assumed for a Pioneer device that exposes neither standard UAC
          * AudioStreaming descriptors nor a verified per-model vendor override: the template every
-         * multichannel DJM in the Linux quirks table shares (12 ch, S24_3LE, 44.1/48/96 kHz).
+         * multichannel DJM in the Linux quirks table shares (S24_3LE, 44.1/48/96 kHz), 12 channels
+         * for the AlphaTheta generation and 8 for the Pioneer Corporation one (DJM-750/850/900NXS).
          */
         private const val GENERIC_ALPHATHETA_CHANNELS = 12
+        private const val GENERIC_PIONEER_CORP_CHANNELS = 8
+        private fun genericChannels(vendorId: Int) =
+            if (vendorId == PioneerMixerProfile.PIONEER_CORP_VENDOR_ID) GENERIC_PIONEER_CORP_CHANNELS
+            else GENERIC_ALPHATHETA_CHANNELS
         private const val GENERIC_ALPHATHETA_SUBFRAME = 3
         private const val GENERIC_ALPHATHETA_BITS = 24
         private val GENERIC_ALPHATHETA_RATES = listOf(44_100, 48_000, 96_000)
@@ -389,14 +394,16 @@ class UsbAudioManager(private val context: Context) {
                     }
                 }
             }
-            // Last resort for AlphaTheta hardware only: a DJM-V5 with a different product ID, or
-            // any future model, that hides its audio behind a vendor-class interface used to be
-            // refused outright ("exposes no supported PCM capture format"). Instead, take the
-            // largest isochronous IN endpoint on a non-zero alt setting, assume the shared DJM
-            // template and say so loudly in the UI -- the pair picker, cadence-based rate
-            // detection and the descriptor export make this diagnosable rather than a dead end.
+            // Last resort for Pioneer hardware only: a DJM-V5 with a different product ID, a
+            // DJM-900NXS whose interface layout differs from its siblings', or any future model,
+            // that hides its audio behind a vendor-class interface used to be refused outright
+            // ("exposes no supported PCM capture format"). Instead, take the largest isochronous
+            // IN endpoint on a non-zero alt setting, assume the shared DJM template for that
+            // vendor generation and say so loudly in the UI -- the pair picker, cadence-based
+            // rate detection and the descriptor export make this diagnosable rather than a dead end.
             val genericFallback = vendorOverride ?: run {
-                if (device.vendorId != PioneerMixerProfile.ALPHATHETA_VENDOR_ID || streamingInterfaces.isNotEmpty()) return@run null
+                if (!isPioneerDevice(device) || streamingInterfaces.isNotEmpty()) return@run null
+                val genericChannelCount = genericChannels(device.vendorId)
                 val candidate = UsbAudioDescriptorParser.findAnyIsoInEndpoints(rawDescriptors)
                     .filter { it.alternateSetting > 0 && (it.isochronousInMaxPacketSize ?: 0) > 0 }
                     .maxByOrNull { it.isochronousInMaxPacketSize ?: 0 }
@@ -404,14 +411,14 @@ class UsbAudioManager(private val context: Context) {
                 formatGuessed = true
                 Log.w(
                     TAG,
-                    "${device.deviceName}: no UAC or profile format; assuming generic AlphaTheta " +
-                        "${GENERIC_ALPHATHETA_CHANNELS}ch/${GENERIC_ALPHATHETA_BITS}bit on " +
+                    "${device.deviceName}: no UAC or profile format; assuming generic Pioneer " +
+                        "${genericChannelCount}ch/${GENERIC_ALPHATHETA_BITS}bit on " +
                         "if${candidate.interfaceNumber}/alt${candidate.alternateSetting} " +
                         "(class ${candidate.interfaceClass}, ep 0x${candidate.isochronousInEndpointAddress?.toString(16)})"
                 )
-                trace(device, "inspectAndPublish", "generic AlphaTheta fallback if${candidate.interfaceNumber}/alt${candidate.alternateSetting}")
+                trace(device, "inspectAndPublish", "generic Pioneer fallback if${candidate.interfaceNumber}/alt${candidate.alternateSetting}")
                 candidate.copy(
-                    channelCount = GENERIC_ALPHATHETA_CHANNELS,
+                    channelCount = genericChannelCount,
                     bitResolution = GENERIC_ALPHATHETA_BITS,
                     subframeSize = GENERIC_ALPHATHETA_SUBFRAME
                 )

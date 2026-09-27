@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Add a DJM-900NXS profile (the original 2011 "nexus"). It enumerates under Pioneer Corporation's
+  USB vendor ID (08e4:0158), which the app had never treated as a mixer; it now recognises that
+  vendor alongside AlphaTheta's. The profile follows the Linux driver's entries for its
+  same-generation siblings, the DJM-750 and DJM-850: 8 channels in and out, 24-bit, 44.1/48/96 kHz
+  on a vendor-class interface, with REC OUT routable to any of the four USB pairs (USB 7/8 by
+  default) through the same vendor register the other DJMs use. There is no descriptor dump of a
+  900NXS yet, so the interface layout is a first guess: if it differs, the app falls back to
+  scanning for the capture endpoint (with an 8-channel template for this vendor), and the
+  diagnostic report carries the descriptors. A forced profile now brings its own vendor ID to the
+  native capture, so any profile can be tried on any Pioneer device from Settings.
+
 ## v0.48.0 (2026-09-26)
 
 - Log every lost USB packet. Each one writes a line with how many packets went, the USB status,
